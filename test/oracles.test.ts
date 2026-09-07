@@ -1,13 +1,37 @@
 import { describe, expect, test } from 'vitest'
 import { keccak256 } from 'viem'
 import { decodeFrameTx, encodeFrameTx } from '../src/envelope.js'
-import { frameTxGas, frameTxMaxCost } from '../src/gas.js'
-import { compareRuleSets } from '../src/divergence.js'
+import {
+  FRAME_TX_PER_FRAME_COST,
+  RECENT_ROOT_REFERENCE_ADDRESS_GAS,
+  RECENT_ROOT_REFERENCE_GAS,
+  frameTxGas,
+  frameTxMaxCost,
+} from '../src/gas.js'
+import { type GasDivergence, compareRuleSets } from '../src/divergence.js'
 import { parseRpcFrameReceipt, parseRpcFrameTransaction } from '../src/rpc.js'
 import { recoverFrameSigner, resolveSigner } from '../src/signatures.js'
 import { loadChainFixtures } from './helpers/fixtures.js'
 
 const fixtures = loadChainFixtures()
+
+/**
+ * Every term the head envelope change can move: the dropped reference charge, the
+ * extra frame, the calldata that moves from `rlp(refs)` into frame data, and the
+ * totals derived from those. A term outside this set is a finding.
+ */
+const HEAD_SHAPE_TERMS = new Set<GasDivergence['term']>([
+  'mandatoryGas',
+  'recentRootReferenceGas',
+  'billedBytes',
+  'dataCost',
+  'intrinsicGas',
+  'calldataTokens',
+  'calldataFloorGas',
+  'calldataFloorTotal',
+  'standardGasLimit',
+  'maxGas',
+])
 
 describe('captured fixtures', () => {
   test('at least one fixture is present', () => {
@@ -95,5 +119,33 @@ describe.each(fixtures)('$name', (fixture) => {
       divergences.map((d) => d.term),
     )}`).toBeDefined()
     expect(root!.delta % 6_000n).toBe(0n)
+  })
+
+  // The same survey against the head draft. Two of the captured fixtures carry
+  // recent-root references, the shape `frameTxGas(tx, 'head')` refuses, so this
+  // runs over `toHeadShape` and is the only place head pricing meets live data.
+  const refs = tx.recentRootReferences.length
+
+  test('pins-vs-head divergences are rooted in the dropped envelope field', () => {
+    const divergences = compareRuleSets(tx, 'pins', 'head')
+    if (refs === 0) {
+      expect(divergences).toEqual([])
+      return
+    }
+
+    const byTerm = new Map(divergences.map((d) => [d.term, d.delta]))
+    // The envelope field is gone: 2400 for the address, 2002 per reference.
+    expect(byTerm.get('recentRootReferenceGas')).toBe(
+      RECENT_ROOT_REFERENCE_ADDRESS_GAS + BigInt(refs) * RECENT_ROOT_REFERENCE_GAS,
+    )
+    // One frame more than the envelope shape, and no other mandatory term moves.
+    expect(byTerm.get('mandatoryGas')).toBe(FRAME_TX_PER_FRAME_COST)
+  })
+
+  test('pins-vs-head moves no term outside the two roots', () => {
+    const unexpected = compareRuleSets(tx, 'pins', 'head')
+      .map((d) => d.term)
+      .filter((term) => !HEAD_SHAPE_TERMS.has(term))
+    expect(unexpected, `${fixture.name} diverges on an unaccounted term`).toEqual([])
   })
 })

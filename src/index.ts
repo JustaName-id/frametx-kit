@@ -41,8 +41,11 @@ export {
 } from './gas.js'
 export {
   HEAD_KEYED_NONCE_STATE_GAS,
+  HEAD_RECENT_ROOT_VERIFIER,
+  HEAD_REFERENCE_BYTES,
   type GasDivergence,
   compareRuleSets,
+  toHeadShape,
 } from './divergence.js'
 export {
   type FrameReceipt,

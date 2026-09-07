@@ -1,7 +1,28 @@
 import { describe, expect, test } from 'vitest'
-import { HEAD_KEYED_NONCE_STATE_GAS, compareRuleSets } from '../src/divergence.js'
+import { size, sliceHex } from 'viem'
+import {
+  HEAD_KEYED_NONCE_STATE_GAS,
+  HEAD_RECENT_ROOT_VERIFIER,
+  HEAD_REFERENCE_BYTES,
+  compareRuleSets,
+  toHeadShape,
+} from '../src/divergence.js'
 import { frameTxGas } from '../src/gas.js'
 import { GOLDEN_TX } from './fixtures/golden.js'
+
+const REF_A = {
+  sourceId: `0x${'11'.repeat(32)}`,
+  slot: 0xaf1n,
+  root: `0x${'22'.repeat(32)}`,
+} as const
+
+const REF_B = {
+  sourceId: `0x${'33'.repeat(32)}`,
+  slot: 0xaf6n,
+  root: `0x${'44'.repeat(32)}`,
+} as const
+
+const TWO_REFERENCE_TX = { ...GOLDEN_TX, recentRootReferences: [REF_A, REF_B] }
 
 /** A SENDER frame carrying value with no target — the shape the chain overcharges. */
 const TARGETLESS_VALUE_TX = {
@@ -79,6 +100,51 @@ describe('compareRuleSets', () => {
 
   test("'pins' and 'head' never diverge on intrinsic gas", () => {
     expect(compareRuleSets(TARGETLESS_VALUE_TX, 'pins', 'head')).toEqual([])
+  })
+})
+
+describe('toHeadShape', () => {
+  test('leaves a transaction that carries no reference untouched', () => {
+    expect(toHeadShape(GOLDEN_TX)).toBe(GOLDEN_TX)
+  })
+
+  test('empties the envelope field and prepends one VERIFY frame', () => {
+    const head = toHeadShape(TWO_REFERENCE_TX)
+    expect(head.recentRootReferences).toEqual([])
+    expect(head.frames.length).toBe(GOLDEN_TX.frames.length + 1)
+    expect(head.frames.slice(1)).toEqual(GOLDEN_TX.frames)
+  })
+
+  test('the synthetic frame is a valueless VERIFY against the 8272 verifier', () => {
+    const verify = toHeadShape(TWO_REFERENCE_TX).frames[0]!
+    expect(verify.mode).toBe(1)
+    expect(verify.flags).toBe(0)
+    expect(verify.target).toBe(HEAD_RECENT_ROOT_VERIFIER)
+    expect(verify.value).toBe(0n)
+  })
+
+  // Zero, not a plausible figure: no draft pins what a VERIFY against 0x…8272
+  // costs, so every limit-derived term of the head price is a floor.
+  test('the synthetic frame claims no execution or state budget', () => {
+    expect(toHeadShape(TWO_REFERENCE_TX).frames[0]!.limits).toEqual({
+      execution: 0n,
+      state: 0n,
+    })
+  })
+
+  test('both references pack into one frame, 72 bytes each', () => {
+    const data = toHeadShape(TWO_REFERENCE_TX).frames[0]!.data
+    expect(size(data)).toBe(2 * HEAD_REFERENCE_BYTES)
+  })
+
+  test('each reference packs as sourceId || slot || root', () => {
+    const data = toHeadShape(TWO_REFERENCE_TX).frames[0]!.data
+    for (const [i, ref] of [REF_A, REF_B].entries()) {
+      const at = i * HEAD_REFERENCE_BYTES
+      expect(sliceHex(data, at, at + 32)).toBe(ref.sourceId)
+      expect(BigInt(sliceHex(data, at + 32, at + 40))).toBe(ref.slot)
+      expect(sliceHex(data, at + 40, at + 72)).toBe(ref.root)
+    }
   })
 })
 
