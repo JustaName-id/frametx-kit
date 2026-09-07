@@ -16,6 +16,7 @@ export { frameTxSigHash } from './sighash.js'
 export {
   SECP256K1_N,
   SECP256R1_N,
+  type FrameAccount,
   assertCanonicalSignature,
   assertValidFrameTx,
   recoverFrameSigner,

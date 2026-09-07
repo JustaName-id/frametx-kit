@@ -44,6 +44,33 @@ assertValidFrameTx(signed)
 const raw = encodeFrameTx(signed)
 ```
 
+`signFrameTx` also takes an account instead of a key — anything with an `address` and a
+raw-digest `sign`, which covers viem's `privateKeyToAccount` and `mnemonicToAccount`, a
+`toAccount` source, and your own wrapper around a hardware wallet, an HSM or a remote
+signer. It signs every SECP256K1 entry whose `msg` is empty, and refuses if the entry's
+resolved signer is not that account's address.
+
+```ts
+import { privateKeyToAccount } from 'viem/accounts'
+
+const signed = await signFrameTx(tx, privateKeyToAccount(privateKey))
+
+// a remote signer needs nothing else:
+const signed = await signFrameTx(tx, {
+  address: '0x…',
+  sign: ({ hash }) => myKms.signDigest(hash), // r||s||v, v as 27/28 or a bare 0/1
+})
+```
+
+A raw-digest `sign` is required. `signMessage` will not do: it EIP-191-prefixes its
+argument, so the signature recovers to nothing. A `JsonRpcAccount` (a browser wallet)
+cannot sign a raw digest at all — both are refused with an error rather than producing a
+transaction the chain silently rejects.
+
+P256 and ARBITRARY entries are left untouched; build those signatures yourself and let
+`assertValidFrameTx` check them. `signFrameTx` also handles one signer at a time, so a
+transaction with entries for two different signers needs the bytes assembled by hand.
+
 ## Two things that will bite you
 
 **Frame receipt status is three-valued** — `'failure'`, `'success'`, `'skipped'`. A

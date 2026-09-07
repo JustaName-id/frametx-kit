@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest'
+import type { Address, Hex } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import {
   SECP256K1_N,
@@ -9,6 +10,7 @@ import {
   signFrameTx,
 } from '../src/signatures.js'
 import { FrameEncodeError } from '../src/errors.js'
+import { frameTxSigHash } from '../src/sighash.js'
 import { GOLDEN_TX } from './fixtures/golden.js'
 
 const PRIVATE_KEY = `0x${'11'.repeat(32)}` as const
@@ -193,5 +195,137 @@ describe('assertValidFrameTx', () => {
       frames: [{ ...GOLDEN_TX.frames[0]!, data: '0xzz11' as const }, GOLDEN_TX.frames[1]!],
     }
     expect(() => assertValidFrameTx(tx)).toThrow(FrameEncodeError)
+  })
+})
+
+// The account path exists so a key this library never sees — a hardware wallet, a
+// KMS, an HD account — can sign. Its bytes must be indistinguishable from the
+// private-key path, which the golden sig-hash and oracle 3 already pin.
+describe('signFrameTx with an account', () => {
+  const oneEmptyEntry = (sender: Address) => ({
+    ...GOLDEN_TX,
+    sender,
+    signatures: [
+      { scheme: 1 as const, signer: null, msg: '0x' as const, signature: '0x' as const },
+    ],
+  })
+
+  test('signs with a viem account and recovers to its address', async () => {
+    const account = privateKeyToAccount(PRIVATE_KEY)
+    const signed = await signFrameTx(oneEmptyEntry(account.address), account)
+    expect(await recoverFrameSigner(signed, 0)).toBe(account.address)
+  })
+
+  test('produces the same bytes as the private-key path', async () => {
+    const account = privateKeyToAccount(PRIVATE_KEY)
+    const tx = oneEmptyEntry(account.address)
+    const viaKey = await signFrameTx(tx, PRIVATE_KEY)
+    const viaAccount = await signFrameTx(tx, account)
+    expect(viaAccount.signatures[0]!.signature).toBe(viaKey.signatures[0]!.signature)
+  })
+
+  // What a KMS or hardware wrapper looks like: an address and a raw-digest signer,
+  // with none of viem's other account surface.
+  test('signs with a bare { address, sign } remote signer', async () => {
+    const inner = privateKeyToAccount(PRIVATE_KEY)
+    const remote = {
+      address: inner.address,
+      sign: ({ hash }: { hash: Hex }) => inner.sign({ hash }),
+    }
+    const signed = await signFrameTx(oneEmptyEntry(inner.address), remote)
+    expect(await recoverFrameSigner(signed, 0)).toBe(inner.address)
+  })
+
+  test('signs over the transaction sig-hash, not some other digest', async () => {
+    const inner = privateKeyToAccount(PRIVATE_KEY)
+    const seen: Hex[] = []
+    const remote = {
+      address: inner.address,
+      sign: ({ hash }: { hash: Hex }) => {
+        seen.push(hash)
+        return inner.sign({ hash })
+      },
+    }
+    const tx = oneEmptyEntry(inner.address)
+    await signFrameTx(tx, remote)
+    expect(seen).toEqual([frameTxSigHash(tx)])
+  })
+
+  // A JsonRpcAccount has no signing methods, and `signMessage` is not a substitute:
+  // it EIP-191-prefixes the digest, so the signature would recover to nothing.
+  test('rejects an account that cannot sign a raw digest', async () => {
+    const account = privateKeyToAccount(PRIVATE_KEY)
+    const jsonRpc = { address: account.address, type: 'json-rpc' as const }
+    await expect(signFrameTx(oneEmptyEntry(account.address), jsonRpc)).rejects.toThrow(
+      FrameEncodeError,
+    )
+    await expect(signFrameTx(oneEmptyEntry(account.address), jsonRpc)).rejects.toThrow(
+      /raw 32-byte digest/,
+    )
+  })
+
+  test('rejects an account whose address is not the resolved signer', async () => {
+    const account = privateKeyToAccount(PRIVATE_KEY)
+    const other = privateKeyToAccount(`0x${'22'.repeat(32)}` as const).address
+    const tx = { ...GOLDEN_TX, sender: account.address,
+      signatures: [{ scheme: 1 as const, signer: other, msg: '0x' as const, signature: '0x' as const }] }
+    await expect(signFrameTx(tx, account)).rejects.toThrow(new RegExp(other, 'i'))
+  })
+
+  test('leaves a P256 entry untouched', async () => {
+    const account = privateKeyToAccount(PRIVATE_KEY)
+    const p256 = {
+      scheme: 2 as const,
+      signer: null,
+      msg: '0x' as const,
+      signature: `0x${'11'.repeat(128)}` as const,
+    }
+    const tx = { ...GOLDEN_TX, sender: account.address, signatures: [p256] }
+    const signed = await signFrameTx(tx, account)
+    expect(signed.signatures[0]).toEqual(p256)
+  })
+})
+
+// Only the account path can reach these: `privateKeyToAccount` always returns
+// viem's 27/28, but an HSM or a hand-rolled wrapper may hand back a bare
+// recovery id. Getting this wrong writes a malformed `v` byte into a signature
+// the chain rejects at consensus, so it is checked rather than assumed.
+describe('signFrameTx recovery-id normalization', () => {
+  const signerReturning = (address: Address, vByte: string, flat: Hex) => ({
+    address,
+    sign: async () => `0x${flat.slice(2, 130)}${vByte}` as Hex,
+  })
+
+  test('accepts a signer that returns a bare recovery id', async () => {
+    const inner = privateKeyToAccount(PRIVATE_KEY)
+    const tx = {
+      ...GOLDEN_TX,
+      sender: inner.address,
+      signatures: [
+        { scheme: 1 as const, signer: null, msg: '0x' as const, signature: '0x' as const },
+      ],
+    }
+    const flat = await inner.sign({ hash: frameTxSigHash(tx) })
+    const v27 = BigInt(`0x${flat.slice(130)}`)
+    const bare = (v27 - 27n).toString(16).padStart(2, '0')
+
+    const viaBare = await signFrameTx(tx, signerReturning(inner.address, bare, flat))
+    const viaPrefixed = await signFrameTx(tx, inner)
+    expect(viaBare.signatures[0]!.signature).toBe(viaPrefixed.signatures[0]!.signature)
+  })
+
+  test('rejects a signer that returns an EIP-155 v', async () => {
+    const inner = privateKeyToAccount(PRIVATE_KEY)
+    const tx = {
+      ...GOLDEN_TX,
+      sender: inner.address,
+      signatures: [
+        { scheme: 1 as const, signer: null, msg: '0x' as const, signature: '0x' as const },
+      ],
+    }
+    const flat = await inner.sign({ hash: frameTxSigHash(tx) })
+    await expect(
+      signFrameTx(tx, signerReturning(inner.address, '25', flat)),
+    ).rejects.toThrow(/signer returned v=37/)
   })
 })

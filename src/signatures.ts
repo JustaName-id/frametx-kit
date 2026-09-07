@@ -115,16 +115,63 @@ export async function recoverFrameSigner(
 }
 
 /**
+ * Reduce whatever `v` a signer returned to the bare recovery id the frame layout
+ * wants. viem returns 27/28; an HSM or a hand-rolled wrapper may return 0/1.
+ *
+ * Subtracting 27 unconditionally turns a bare id into a negative number and
+ * writes `0x-1a…` into the signature — malformed hex that only trips the
+ * byte-alignment check downstream, with a message that names the wrong problem.
+ * An EIP-155 `v` is refused outright: it encodes a chain id this layout has no
+ * room for, and guessing at its parity would forge a recovery id.
+ */
+function bareRecoveryId(v: bigint, index: number): bigint {
+  if (v === 0n || v === 1n) return v
+  if (v === 27n || v === 28n) return v - 27n
+  throw new FrameEncodeError(
+    `signature ${index}: signer returned v=${v}; expected a bare recovery id ` +
+      `(0 or 1) or viem's 27/28. An EIP-155 v is not supported here — the frame ` +
+      `layout carries a bare id and the chain id is a separate field.`,
+  )
+}
+
+/**
+ * Anything that can sign a raw 32-byte digest for a known address: viem's
+ * `privateKeyToAccount` and `mnemonicToAccount`, a `toAccount` source, or a
+ * hand-rolled wrapper around a hardware wallet, an HSM or a remote signer.
+ *
+ * `sign` is optional because it is optional on viem's own `LocalAccount` — a
+ * `toAccount` source need not provide it — so requiring it here would reject
+ * every `LocalAccount` at the type level. `signFrameTx` checks for it instead.
+ *
+ * `signMessage` is deliberately not an accepted substitute: it prefixes its
+ * argument per EIP-191, so it cannot produce a signature over a sig-hash.
+ */
+export type FrameAccount = {
+  address: Address
+  sign?: ((parameters: { hash: Hex }) => Promise<Hex>) | undefined
+}
+
+/**
  * Sign every empty-`msg` SECP256K1 entry over the transaction's sig-hash.
+ *
+ * Takes either a raw private key or a `FrameAccount` — a hardware wallet, a
+ * KMS, an HD account, anything that signs a digest for a known address.
  *
  * Idempotent: the sig-hash elides empty-`msg` signature bytes, so re-signing an
  * already-signed transaction produces the same bytes.
  */
 export async function signFrameTx(
   tx: FrameTransaction,
-  privateKey: Hex,
+  signer: Hex | FrameAccount,
 ): Promise<FrameTransaction> {
-  const account = privateKeyToAccount(privateKey)
+  const account = typeof signer === 'string' ? privateKeyToAccount(signer) : signer
+  if (typeof account.sign !== 'function')
+    throw new FrameEncodeError(
+      `account ${account.address} cannot sign a raw 32-byte digest: it has no ` +
+        `\`sign\` method. A JSON-RPC account cannot sign one at all, and ` +
+        `\`signMessage\` is not a substitute — it EIP-191-prefixes its argument.`,
+    )
+  const sign = account.sign
   const digest = frameTxSigHash(tx)
 
   const signatures = await Promise.all(
@@ -142,11 +189,11 @@ export async function signFrameTx(
             `the signing account ${account.address}`,
         )
 
-      const flat = await account.sign({ hash: digest })
+      const flat = await sign({ hash: digest })
       // viem returns r||s||v with v in {27,28}; the frame layout is v||r||s with a bare id.
       const r = sliceHex(flat, 0, 32)
       const s = sliceHex(flat, 32, 64)
-      const v = BigInt(sliceHex(flat, 64, 65)) - 27n
+      const v = bareRecoveryId(BigInt(sliceHex(flat, 64, 65)), i)
       const signature = `0x${v.toString(16).padStart(2, '0')}${r.slice(2)}${s.slice(2)}` as Hex
       return { ...sig, signature }
     }),

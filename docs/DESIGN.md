@@ -130,6 +130,31 @@ unrelayable — which makes them a correctness requirement of this library, not 
 An empty `signer` resolves to `tx.sender` for SECP256K1 and P256, including for EVM
 introspection.
 
+### Signing
+
+`signFrameTx(tx, signer)` takes either a raw private key or a `FrameAccount` —
+`{ address, sign }`, satisfied by viem's `privateKeyToAccount` and `mnemonicToAccount`, by a
+`toAccount` source, and by any wrapper around a hardware wallet, an HSM or a remote signer.
+It signs exactly the entries that are SECP256K1 with an empty `msg`, over `sig_hash`, and
+refuses when an entry's resolved signer is not the account's address — otherwise the result
+would recover to the wrong address and be rejected at consensus with no local error.
+
+**Raw-digest signing is required.** `signMessage` prefixes its argument per EIP-191, so it
+cannot produce a signature over `sig_hash`, and a `JsonRpcAccount` cannot sign a raw digest
+at all. Both are refused with an error rather than silently producing an unrecoverable
+signature. `sign` is typed optional because it is optional on viem's own `LocalAccount`;
+the check is at runtime.
+
+**A returned `v` is normalized, not assumed.** viem returns 27/28; HSMs and hand-rolled
+wrappers commonly return a bare 0/1. Both are accepted. An EIP-155 `v` is refused: it
+encodes a chain id this layout has no room for, and guessing at its parity would forge a
+recovery id. Subtracting 27 unconditionally — the obvious implementation — writes `0x-1a…`
+into the signature, malformed hex that surfaces only as a byte-alignment error naming the
+wrong problem.
+
+This does not widen §2's out-of-scope line on key management. The account form holds no key
+material; it delegates key management to the caller instead of doing any.
+
 ### Structural limits
 
 | Constant | Value | Source |
@@ -267,7 +292,7 @@ Ten source files in dependency order. Nothing depends on anything above it.
 | `rlp` | `rlpUint`, `parseRlpUint`, `byteLength`: minimal-scalar rules viem does not enforce. | `errors` |
 | `envelope` | `encodeFrameTx`, `decodeFrameTx`, `validateFrameTx`. Pure, no IO. | `rlp`, `errors`, `types`, viem `toRlp`/`fromRlp` |
 | `sighash` | The elision rule plus keccak256. | `envelope` |
-| `signatures` | Canonical rules, signer recovery, empty-signer resolution, `assertValidFrameTx`. | `sighash`, `envelope` |
+| `signatures` | Canonical rules, signer recovery, empty-signer resolution, signing (private key or external account), `assertValidFrameTx`. | `sighash`, `envelope` |
 | `gas` | The whole of §4, parameterized by rule set. Pure, no IO. | `rlp`, `errors`, `types` only |
 | `divergence` | `compareRuleSets` and the head EIP-8250 state-gas figure. | `gas` |
 | `rpc` | Typed `ethrex_simulateFrameTransaction`; frame-aware transaction and receipt formatters. | `errors`, `types` only |
