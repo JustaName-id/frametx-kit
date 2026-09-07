@@ -1,14 +1,10 @@
 import { type Address, type Hex, recoverAddress, sliceHex } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
-import { validateFrameTx } from './envelope.js'
+import { sameAddress, validateFrameTx } from './envelope.js'
 import { FrameEncodeError, FrameRlpError } from './errors.js'
 import { byteLength } from './rlp.js'
 import { frameTxSigHash } from './sighash.js'
 import type { FrameSignature, FrameTransaction } from './types.js'
-
-function sameAddress(a: Address, b: Address): boolean {
-  return a.toLowerCase() === b.toLowerCase()
-}
 
 export const SECP256K1_N =
   0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n

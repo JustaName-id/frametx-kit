@@ -238,7 +238,8 @@ const U64_MAX = 2n ** 64n - 1n
 const I64_MAX = 2n ** 63n - 1n
 const U256_MAX = 2n ** 256n - 1n
 
-function sameAddress(a: Address, b: Address): boolean {
+/** Addresses compare case-insensitively: `getAddress` returns EIP-55 mixed case. */
+export function sameAddress(a: Address, b: Address): boolean {
   return a.toLowerCase() === b.toLowerCase()
 }
 
