@@ -66,6 +66,7 @@ export type FrameTransaction = {
  *   the EIP-8250 gas change; the EIP-8272 head draft changes the *envelope*
  *   (recent-root references become a leading VERIFY frame), not just the
  *   price, so `frameTxGas` refuses rather than guess at a reference-carrying
- *   transaction under `'head'`.
+ *   transaction under `'head'`. Price one through `compareRuleSets`, which
+ *   routes it via `toHeadShape`, or call that transform directly.
  */
 export type RuleSet = 'chain' | 'pins' | 'head'

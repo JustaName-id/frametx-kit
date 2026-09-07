@@ -278,8 +278,12 @@ What `'head'` changes, per the branch spec's "Changed upstream since the pins":
   carrying references instead as a leading VERIFY frame targeting
   `0x0000000000000000000000000000000000008272`, each `(source_id, slot, root)` packed into 72
   bytes of frame data. This changes the *envelope*, not only the gas, so `'head'` cannot share
-  the `'chain'` encoder. Pass 1 implements the `'head'` gas arm and records the envelope change
-  as a documented limitation rather than a second serializer.
+  the `'chain'` encoder. `divergence.toHeadShape` applies the change as a transformation of the
+  transaction: the field is emptied and its contents prepended as one VERIFY frame with zero
+  limits, which the existing pricer then prices. `compareRuleSets` routes whichever side names `'head'`
+  through it. `gas` fabricates nothing and `frameTxGas(tx, 'head')` still refuses a
+  reference-carrying transaction, so the floor that zero limits produce cannot be mistaken for a
+  budget. No second serializer: the transform yields a `FrameTransaction`, never bytes.
 
 ## 5. Modules
 
@@ -485,6 +489,5 @@ None blocking. Two to settle during implementation, both low-stakes and reversib
 - Whether to depend on viem directly or on `ox`, the lower-level library viem builds on. viem
   is assumed here because the extension surface requires it anyway; `ox` would only reduce the
   core module's dependency weight, and the decision can be deferred until the core is green.
-- How the `'head'` EIP-8272 envelope change is eventually represented, if it is. Pass 1
-  documents it as a limitation; a second serializer is only justified once that draft stops
-  moving.
+- Whether the `'head'` EIP-8272 envelope change ever needs a serializer. `toHeadShape` covers
+  pricing without one; bytes are only justified once that draft stops moving.
