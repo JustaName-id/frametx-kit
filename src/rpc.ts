@@ -65,20 +65,27 @@ export type RpcFrameReceiptJson = {
   }[]
 }
 
+const PREFIX_SHAPES = [
+  'SelfVerify',
+  'DeploySelfVerify',
+  'OnlyVerifyPay',
+  'DeployOnlyVerifyPay',
+] as const
+
+const EXECUTION_STATUSES = ['success', 'reverted'] as const
+
+type PrefixShape = (typeof PREFIX_SHAPES)[number]
+type ExecutionStatus = (typeof EXECUTION_STATUSES)[number]
+
 export type SimulateFrameTransactionResult = {
   valid: boolean
-  prefixShape:
-    | 'SelfVerify'
-    | 'DeploySelfVerify'
-    | 'OnlyVerifyPay'
-    | 'DeployOnlyVerifyPay'
-    | null
+  prefixShape: PrefixShape | null
   payer: Address | null
   maxCost: bigint
   violation: string | null
   gasUsed: bigint | null
   frames: { gasUsed: bigint; succeeded: boolean }[] | null
-  executionStatus: 'success' | 'reverted' | null
+  executionStatus: ExecutionStatus | null
   executionError: string | null
 }
 
@@ -192,21 +199,123 @@ export async function simulateFrameTransaction(
     params: [raw, block],
   })) as Record<string, unknown>
 
+  return parseSimulateResult(result)
+}
+
+/** A field is missing (`null`) or it is checked. Nothing here is cast. */
+function asUnion<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  what: string,
+): T | null {
+  if (value === undefined || value === null) return null
+  if (typeof value === 'string' && (allowed as readonly string[]).includes(value))
+    return value as T
+  throw new FrameDecodeError(
+    `simulate result: ${what} must be null or one of ${allowed.join(', ')}, got ${JSON.stringify(value)}`,
+  )
+}
+
+/**
+ * A JSON-RPC quantity: `0x` and at least one hex digit.
+ *
+ * The prefix is required rather than handed to `BigInt`, which reads a
+ * prefixless string as DECIMAL and both the empty string and whitespace as
+ * zero. A node reporting `maxCost` in another format would otherwise produce a
+ * quietly wrong number instead of an error, which is the failure this whole
+ * function exists to prevent.
+ */
+function asHexScalar(value: unknown, what: string): bigint {
+  if (typeof value !== 'string')
+    throw new FrameDecodeError(
+      `simulate result: ${what} must be a hex string, got ${JSON.stringify(value)}`,
+    )
+  if (!/^0x[0-9a-fA-F]+$/.test(value))
+    throw new FrameDecodeError(
+      `simulate result: ${what} is not a hex quantity: ${JSON.stringify(value)}`,
+    )
+  return BigInt(value)
+}
+
+function asOptionalHexScalar(value: unknown, what: string): bigint | null {
+  return value === undefined || value === null ? null : asHexScalar(value, what)
+}
+
+function asOptionalString(value: unknown, what: string): string | null {
+  if (value === undefined || value === null) return null
+  if (typeof value !== 'string')
+    throw new FrameDecodeError(
+      `simulate result: ${what} must be a string, got ${JSON.stringify(value)}`,
+    )
+  return value
+}
+
+function asOptionalAddress(value: unknown, what: string): Address | null {
+  if (value === undefined || value === null) return null
+  if (typeof value !== 'string')
+    throw new FrameDecodeError(
+      `simulate result: ${what} must be an address, got ${JSON.stringify(value)}`,
+    )
+  try {
+    return getAddress(value)
+  } catch {
+    throw new FrameDecodeError(`simulate result: ${what} is not an address: ${value}`)
+  }
+}
+
+function asFrameResults(value: unknown): { gasUsed: bigint; succeeded: boolean }[] | null {
+  if (value === undefined || value === null) return null
+  if (!Array.isArray(value))
+    throw new FrameDecodeError(
+      `simulate result: frames must be null or a list, got ${JSON.stringify(value)}`,
+    )
+  return value.map((entry, i) => {
+    const frame = entry as Record<string, unknown> | null
+    if (typeof frame?.succeeded !== 'boolean')
+      throw new FrameDecodeError(
+        `simulate result: frames[${i}].succeeded must be a boolean, got ${JSON.stringify(frame?.succeeded)}`,
+      )
+    return {
+      gasUsed: asHexScalar(frame.gasUsed, `frames[${i}].gasUsed`),
+      succeeded: frame.succeeded,
+    }
+  })
+}
+
+/**
+ * Check the node's simulate response instead of casting it.
+ *
+ * `valid` is the field a caller keys the decision to relay off, and
+ * `prefixShape` and `executionStatus` are closed unions the caller is expected
+ * to switch on. A cast would let a value outside those sets through wearing the
+ * union's type: a node that grows a fifth prefix shape, which this chain is
+ * likely enough to do, would silently fall through every branch. The rest of
+ * this module already refuses an out-of-range `mode`, `scheme` or receipt
+ * `status`; this is the same rule applied to the same source.
+ *
+ * Every field goes through a checked helper so that a response this library
+ * cannot read fails as a `FrameDecodeError` naming the field, rather than as a
+ * `TypeError` out of `BigInt` or an address error out of viem.
+ */
+export function parseSimulateResult(
+  result: Record<string, unknown>,
+): SimulateFrameTransactionResult {
+  if (typeof result.valid !== 'boolean')
+    throw new FrameDecodeError(
+      `simulate result: valid must be a boolean, got ${JSON.stringify(result.valid)}`,
+    )
+
   return {
-    valid: result.valid as boolean,
-    prefixShape: (result.prefixShape ?? null) as SimulateFrameTransactionResult['prefixShape'],
-    payer: result.payer ? getAddress(result.payer as Address) : null,
-    maxCost: BigInt(result.maxCost as Hex),
-    violation: (result.violation ?? null) as string | null,
-    gasUsed: result.gasUsed ? BigInt(result.gasUsed as Hex) : null,
-    frames: result.frames
-      ? (result.frames as { gasUsed: Hex; succeeded: boolean }[]).map((f) => ({
-          gasUsed: BigInt(f.gasUsed),
-          succeeded: f.succeeded,
-        }))
-      : null,
-    executionStatus: (result.executionStatus ??
-      null) as SimulateFrameTransactionResult['executionStatus'],
-    executionError: (result.executionError ?? null) as string | null,
+    valid: result.valid,
+    prefixShape: asUnion(result.prefixShape, PREFIX_SHAPES, 'prefixShape'),
+    payer: asOptionalAddress(result.payer, 'payer'),
+    // Reported on every path, structural rejection included, because it is a
+    // pure function of the fields (DESIGN.md §5, "The node's JSON surface").
+    maxCost: asHexScalar(result.maxCost, 'maxCost'),
+    violation: asOptionalString(result.violation, 'violation'),
+    gasUsed: asOptionalHexScalar(result.gasUsed, 'gasUsed'),
+    frames: asFrameResults(result.frames),
+    executionStatus: asUnion(result.executionStatus, EXECUTION_STATUSES, 'executionStatus'),
+    executionError: asOptionalString(result.executionError, 'executionError'),
   }
 }
