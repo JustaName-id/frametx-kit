@@ -1,0 +1,6 @@
+[install]
+# Supply-chain hardening: only install versions published at least 7 days ago,
+# transitive dependencies included, so a compromised release is found before it
+# lands in an install. An urgent security patch can be excepted per package
+# rather than by lowering this value.
+minimumReleaseAge = 604800 # seconds = 7 days

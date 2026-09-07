@@ -35,6 +35,13 @@ Use **bun**. `bun.lock` is committed so everyone resolves the same tree; don't c
 second lockfile. The `scripts` block invokes `vitest` and `tsc` directly, so another
 runner will work if you need one.
 
+`bunfig.toml` sets `minimumReleaseAge` to seven days, transitive dependencies included, so
+a compromised release is found before it reaches an install. Adding a dependency published
+in the last week will fail to resolve, which is the intended behaviour: wait it out, or add
+that one package to `minimumReleaseAgeExcludes` rather than lowering the global value. Note
+that the unit is seconds here and minutes in pnpm, so the two numbers are not
+interchangeable.
+
 ## Running the checks
 
 ```bash
