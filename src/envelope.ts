@@ -238,7 +238,8 @@ const U64_MAX = 2n ** 64n - 1n
 const I64_MAX = 2n ** 63n - 1n
 const U256_MAX = 2n ** 256n - 1n
 
-function sameAddress(a: Address, b: Address): boolean {
+/** Addresses compare case-insensitively: `getAddress` returns EIP-55 mixed case. */
+export function sameAddress(a: Address, b: Address): boolean {
   return a.toLowerCase() === b.toLowerCase()
 }
 
@@ -280,42 +281,48 @@ function checkedByteLength(value: Hex, what: string): number {
   }
 }
 
+/**
+ * A 20-byte address field. `Address` is `0x${string}`, so a wrong-width value
+ * typechecks; viem's `toRlp` then left-pads odd-length hex and the encoder emits
+ * a field ethrex's H160 decoder refuses with `InvalidLength`. `asAddressOrNull`
+ * already enforces this width on the way in, so the encode side has to match.
+ */
+function assertAddressWidth(value: Address, what: string): void {
+  const bytes = checkedByteLength(value, what)
+  if (bytes !== 20)
+    throw new FrameEncodeError(`${what} must be 20 bytes, got ${bytes}`)
+}
+
 function isExpiryVerifier(frame: Frame): boolean {
   return frame.mode === 1 && frame.target !== null && sameAddress(frame.target, EXPIRY_VERIFIER)
 }
 
-/**
- * The encode-side structural rules, transcribed from
- * `FrameTransaction::validate_static_constraints` (transaction.rs:2662-3010).
- *
- * Strict on purpose: these are consensus rules, so producing a transaction that
- * violates one is producing an invalid transaction, not merely an unrelayable
- * one. Rules that need chain state — nonce values, recent-root windows, the
- * EIP-7825 cap against the block gas limit, the validation prefix itself — are
- * the node's; `simulateFrameTransaction` in `rpc.ts` replays them.
- *
- * Mode 5 (UTXO) rules are omitted: `utxoFramesTime` is unset on this chain and
- * `FrameMode` does not admit 5.
- */
-export function validateFrameTx(tx: FrameTransaction): void {
-  // Field widths, before anything else: these are the widths ethrex's decoder
-  // reads them at (`chain_id`, `nonce_seq`, both non-blob fees and
-  // `RecentRootReference::slot` are u64; `max_fee_per_blob_gas`, the nonce keys
-  // and `Frame::value` are U256).
+function assertFieldWidths(tx: FrameTransaction): void {
+  // These are the widths ethrex's decoder reads the fields at (`chain_id`,
+  // `nonce_seq`, both non-blob fees and `RecentRootReference::slot` are u64;
+  // `max_fee_per_blob_gas`, the nonce keys and `Frame::value` are U256).
   assertUint(tx.chainId, 64, 'chainId')
   assertUint(tx.nonceSeq, 64, 'nonceSeq')
   assertUint(tx.maxPriorityFeePerGas, 64, 'maxPriorityFeePerGas')
   assertUint(tx.maxFeePerGas, 64, 'maxFeePerGas')
   assertUint(tx.maxFeePerBlobGas, 256, 'maxFeePerBlobGas')
+}
 
+function assertSender(tx: FrameTransaction): void {
+  assertAddressWidth(tx.sender, 'sender')
   if (sameAddress(tx.sender, ZERO_ADDRESS))
     throw new FrameEncodeError('sender must not be the zero address')
+}
 
+/** Checked before the nonce rules, matching the order in the Rust original. */
+function assertFrameCount(tx: FrameTransaction): void {
   if (tx.frames.length === 0)
     throw new FrameEncodeError('a frame transaction needs at least one frame')
   if (tx.frames.length > MAX_FRAMES)
     throw new FrameEncodeError(`at most ${MAX_FRAMES} frames, got ${tx.frames.length}`)
+}
 
+function assertNonce(tx: FrameTransaction): void {
   if (tx.nonceKeys.length < 1 || tx.nonceKeys.length > MAX_NONCE_KEYS)
     throw new FrameEncodeError(
       `nonceKeys must hold between 1 and ${MAX_NONCE_KEYS} entries, got ${tx.nonceKeys.length}`,
@@ -330,7 +337,9 @@ export function validateFrameTx(tx: FrameTransaction): void {
     )
   if (tx.nonceSeq >= U64_MAX)
     throw new FrameEncodeError('nonceSeq must be below 2**64 - 1')
+}
 
+function assertRecentRootReferences(tx: FrameTransaction): void {
   if (tx.recentRootReferences.length > MAX_RECENT_ROOT_REFERENCES)
     throw new FrameEncodeError(
       `at most ${MAX_RECENT_ROOT_REFERENCES} recent-root references, got ${tx.recentRootReferences.length}`,
@@ -344,7 +353,9 @@ export function validateFrameTx(tx: FrameTransaction): void {
       throw new FrameEncodeError(`recentRootReference ${i}: root must be 32 bytes`)
     assertUint(ref.slot, 64, `recentRootReference ${i}: slot`)
   }
+}
 
+function assertBlobs(tx: FrameTransaction): void {
   if (tx.blobVersionedHashes.length > MAX_BLOBS_PER_TX)
     throw new FrameEncodeError(
       `at most ${MAX_BLOBS_PER_TX} blobs, got ${tx.blobVersionedHashes.length}`,
@@ -358,12 +369,15 @@ export function validateFrameTx(tx: FrameTransaction): void {
     throw new FrameEncodeError(
       'maxFeePerBlobGas must be zero when the transaction carries no blobs',
     )
+}
 
+function assertSignatures(tx: FrameTransaction): void {
   for (const [i, sig] of tx.signatures.entries()) {
     // Every scheme, ARBITRARY included: the bytes still have to be a byte string.
     checkedByteLength(sig.signature, `signature ${i}: signature`)
     if (sig.scheme === 0 && sig.signer !== null)
       throw new FrameEncodeError(`signature ${i}: an ARBITRARY entry must have an empty signer`)
+    if (sig.signer !== null) assertAddressWidth(sig.signer, `signature ${i}: signer`)
     if (sig.msg !== '0x') {
       const msgBytes = checkedByteLength(sig.msg, `signature ${i}: msg`)
       if (msgBytes !== 32)
@@ -374,10 +388,13 @@ export function validateFrameTx(tx: FrameTransaction): void {
         throw new FrameEncodeError(`signature ${i}: an explicit msg must not be the zero digest`)
     }
   }
+}
 
+function assertFrames(tx: FrameTransaction): void {
   let expiryFrames = 0
   let cumulativeGas = 0n
   for (const [i, frame] of tx.frames.entries()) {
+    if (frame.target !== null) assertAddressWidth(frame.target, `frame ${i}: target`)
     const dataBytes = checkedByteLength(frame.data, `frame ${i}: data`)
     // ethrex decodes `flags` as u64 then `u8::try_from` ("Frame flags too
     // large"). Check the width before the mask: bit 8 and up clear 0xf8.
@@ -440,4 +457,31 @@ export function validateFrameTx(tx: FrameTransaction): void {
     if (inBatch && (frame.flags & APPROVE_SCOPE_MASK) !== 0)
       throw new FrameEncodeError(`frame ${i}: a frame in an atomic batch must not approve a scope`)
   }
+}
+
+/**
+ * The encode-side structural rules, transcribed from
+ * `FrameTransaction::validate_static_constraints` (transaction.rs:2662-3010).
+ *
+ * Strict on purpose: these are consensus rules, so producing a transaction that
+ * violates one is producing an invalid transaction, not merely an unrelayable
+ * one. Rules that need chain state — nonce values, recent-root windows, the
+ * EIP-7825 cap against the block gas limit, the validation prefix itself — are
+ * the node's; `simulateFrameTransaction` in `rpc.ts` replays them.
+ *
+ * Mode 5 (UTXO) rules are omitted: `utxoFramesTime` is unset on this chain and
+ * `FrameMode` does not admit 5.
+ *
+ * The rules are grouped one helper per field family, called in the order the
+ * Rust original checks them so the first violation reported matches it.
+ */
+export function validateFrameTx(tx: FrameTransaction): void {
+  assertFieldWidths(tx)
+  assertSender(tx)
+  assertFrameCount(tx)
+  assertNonce(tx)
+  assertRecentRootReferences(tx)
+  assertBlobs(tx)
+  assertSignatures(tx)
+  assertFrames(tx)
 }
