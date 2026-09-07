@@ -1,0 +1,85 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+jspm_packages/
+
+# Build output
+dist/
+build/
+out/
+lib/
+*.tsbuildinfo
+
+# Test and coverage output
+coverage/
+.nyc_output/
+*.lcov
+.vitest/
+vitest.config.ts.timestamp-*
+
+# Secrets and keys. The private keys in the test suite are hardcoded throwaways
+# that hold no funds; nothing real should ever live in this repository.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.keystore
+secrets.json
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+bun-debug.log*
+.pnpm-debug.log*
+
+# Caches
+.cache/
+.temp/
+.tmp/
+.eslintcache
+.turbo/
+.parcel-cache/
+
+# Agent and tooling scratch. The subagent-driven-development workspace holds
+# snapshots, diffs and briefs that are regenerable and large.
+.superpowers/
+.claude/settings.local.json
+
+# Editors
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# Other package managers' lockfiles. This project uses bun, and bun.lock IS
+# committed so CI and contributors resolve the same tree.
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Deliberately NOT ignored, listed here so nobody adds them later by reflex:
+#   bun.lock                  - the lockfile this project actually uses
+#   test/fixtures/chain/*.json - captured chain data the hermetic suite needs
+#   docs/                     - the design spec is the binding authority for
+#                               this library, and CLAUDE.md and README link it
+
+# npm auth written by CI during release
+.npmrc

@@ -1,0 +1,86 @@
+name: Release
+
+# The first release is deliberate: with no `v*` tag present, a push to main
+# publishes nothing and tells you to run this workflow manually. Every release
+# after that is automatic, driven by conventional commits.
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    if: >
+      !startsWith(github.event.head_commit.message, 'chore(release):') &&
+      !contains(github.event.head_commit.message, '[skip ci]')
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - run: bun install --frozen-lockfile
+
+      # dist/ must exist before publish, since the tarball is files: ["dist", ...].
+      - run: bun run build
+
+      - name: Release and publish
+        run: |
+          if [ -n "$(git tag -l 'v*')" ]; then
+            bunx semantic-release
+            exit 0
+          fi
+
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            echo "No v* tag yet, so this repository has never been released."
+            echo "The initial 0.0.1 publish is manual on purpose:"
+            echo "  Actions -> Release -> Run workflow"
+            echo "Nothing published."
+            exit 0
+          fi
+
+          VERSION="$(node -p "require('./package.json').version")"
+          echo "Publishing initial v$VERSION"
+          npm publish
+          git tag "v$VERSION"
+          git push origin "v$VERSION"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

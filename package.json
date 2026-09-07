@@ -1,0 +1,95 @@
+{
+  "name": "@jaw.id/frametx-kit",
+  "version": "0.0.1",
+  "description": "Read, build, hash, sign, price and simulate EIP-8141 frame transactions as hegota-testnet accepts them.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "viem": [
+        "./dist/viem.d.ts"
+      ]
+    }
+  },
+  "sideEffects": false,
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./viem": {
+      "import": {
+        "types": "./dist/viem.d.ts",
+        "default": "./dist/viem.js"
+      },
+      "require": {
+        "types": "./dist/viem.d.cts",
+        "default": "./dist/viem.cjs"
+      }
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JustaName-id/frametx-kit.git"
+  },
+  "bugs": {
+    "url": "https://github.com/JustaName-id/frametx-kit/issues"
+  },
+  "homepage": "https://github.com/JustaName-id/frametx-kit#readme",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md",
+    "!**/*.tsbuildinfo"
+  ],
+  "keywords": [
+    "ethereum",
+    "eip-8141",
+    "eip-8250",
+    "eip-8272",
+    "frame-transaction",
+    "hegota-testnet",
+    "ethrex",
+    "viem",
+    "rlp"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:live": "FRAMES_LIVE=1 vitest run test/live",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "@semantic-release/changelog": "^7.0.0",
+    "@semantic-release/git": "^11.0.1",
+    "@types/node": "^20.16.0",
+    "semantic-release": "^25.0.9",
+    "tsup": "^8.5.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "viem": "^2.21.0",
+    "vitest": "^2.1.0"
+  },
+  "engines": {
+    "bun": ">=1.2.0",
+    "node": ">=20"
+  }
+}
