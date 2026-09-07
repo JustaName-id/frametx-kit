@@ -70,7 +70,7 @@ async function main() {
       const receipt = await rpc<unknown>('eth_getTransactionReceipt', [tx.hash])
 
       // Our re-encoding. Checked against the hash here only to WARN: a mismatch is
-      // a finding for Task 9's Oracle 2, which fails loudly with a field diff, so
+      // a finding for Oracle 2 in test/oracles.test.ts, which fails loudly, so
       // the fixture is still written. `simulate` over wrong bytes is then noise.
       const raw = encodeFrameTx(parseRpcFrameTransaction(tx))
       if (keccak256(raw) !== tx.hash)

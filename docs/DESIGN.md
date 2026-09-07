@@ -1,8 +1,9 @@
 # frametx-kit — design
 
 **Date:** 2026-09-06
-**Status:** implemented; binding on the code in this repository. Reviewed against ethrex `hegota-testnet` @ `19c065fa8` and the live node on 2026-09-06; §5, §6 and §9 amended for the RPC surface actually served (no raw transaction bytes).
+**Status:** implemented; binding on the code in this repository. Reviewed against ethrex `hegota-testnet` @ `19c065fa8` and the live node on 2026-09-06; §5, §6 and §9 amended for the RPC surface actually served (no raw transaction bytes). §5, §7 and §8 amended 2026-09-07 to match the module graph, strict-decode surface and entry-point name as built.
 **Target network:** hegota-testnet, chain ID `8141`, genesis `0x7ca0f735…cd0f2332`
+**Reference client:** [`lambdaclass/ethrex`, branch `hegota-testnet`](https://github.com/lambdaclass/ethrex/tree/hegota-testnet). Every `.rs`, `.py` and `docs/*.md` path cited below is a path in that repository, not in this one.
 
 A TypeScript library for reading, building, hashing, pricing and simulating EIP-8141 frame
 transactions as they exist on hegota-testnet — the composed envelope that also carries
@@ -11,7 +12,7 @@ EIP-8250 keyed nonces and EIP-8272 recent-root references.
 ## 1. Why this exists
 
 **No JavaScript can touch this chain.** The only frame-transaction encoders are ethrex's Rust
-implementation and `scripts/hegota-testnet/frametx.py` (126 lines). viem PR 4486 is a draft,
+implementation and ethrex's own `scripts/hegota-testnet/frametx.py` (126 lines). viem PR 4486 is a draft,
 last touched 2026-05-06, with zero human review; it implements a pre-composition EIP-8141
 envelope with a flat `nonce`, flat fees, no `limits`, no recent-root references, and — across
 its whole 3372-line diff — no `signatures` field and no `sig_hash`. It cannot authenticate a
@@ -257,20 +258,28 @@ What `'head'` changes, per the branch spec's "Changed upstream since the pins":
 
 ## 5. Modules
 
-Seven units in dependency order. Nothing depends on anything above it.
+Ten source files in dependency order. Nothing depends on anything above it.
 
 | Module | Responsibility | Depends on |
 |---|---|---|
-| `envelope` | Types, `encodeFrameTx`, `decodeFrameTx`, structural validation. Pure, no IO. | viem `toRlp`/`fromRlp` |
+| `types` | The `FrameTransaction` shape and the `RuleSet` union. | viem types only |
+| `errors` | Typed error classes with stable `name`s. | — |
+| `rlp` | `rlpUint`, `parseRlpUint`, `byteLength`: minimal-scalar rules viem does not enforce. | `errors` |
+| `envelope` | `encodeFrameTx`, `decodeFrameTx`, `validateFrameTx`. Pure, no IO. | `rlp`, `errors`, `types`, viem `toRlp`/`fromRlp` |
 | `sighash` | The elision rule plus keccak256. | `envelope` |
-| `signatures` | Canonical rules, signer recovery, empty-signer resolution, P256 `s` normalization. | `sighash` |
-| `gas` | The whole of §4, parameterized by rule set. Pure, no IO. | `envelope` |
-| `rpc` | Typed `ethrex_simulateFrameTransaction`; frame-aware transaction and receipt formatters. | `envelope` |
-| `viem` | `client.extend(frameActions)`. Thin — no logic of its own. | `rpc`, `gas` |
+| `signatures` | Canonical rules, signer recovery, empty-signer resolution, `assertValidFrameTx`. | `sighash`, `envelope` |
+| `gas` | The whole of §4, parameterized by rule set. Pure, no IO. | `rlp`, `errors`, `types` only |
+| `divergence` | `compareRuleSets` and the head EIP-8250 state-gas figure. | `gas` |
+| `rpc` | Typed `ethrex_simulateFrameTransaction`; frame-aware transaction and receipt formatters. | `errors`, `types` only |
+| `viem` | `client.extend(frameActions)`. Thin — no logic of its own. | `envelope`, `rpc`, `gas` |
 | `fixtures` | The golden vector plus captured real transactions, as JSON. | — |
 
-`gas` deliberately does not depend on `rpc`. The gas model is the thing being learned, so it
-stays a pure function testable offline against a table of cases.
+`gas` deliberately does not depend on `envelope` or `rpc`, and `rpc` does not depend on
+`envelope`. The gas model is the thing being learned, so it stays a pure function testable
+offline against a table of cases, and independently wrong or independently right of the
+encoder. The small duplication this causes (a `sameAddress` helper, the framing of two
+calldata blobs) is deliberate; `CONTRIBUTING.md` lists it among the rules that are not style
+preferences.
 
 Crypto is borrowed, not written: viem supplies RLP, keccak256 and secp256k1. The envelope is
 hand-rolled because it is the object of study; ECDSA is not.
@@ -366,10 +375,12 @@ Encoding and inspecting want opposite defaults.
 restricted to 0, 1, 2; structural limits enforced; `value` non-zero only on SENDER frames.
 Violations throw a typed error before any bytes are produced.
 
-**Decode is lenient by default,** with an opt-in `strict` flag. It must decode anything the
-chain accepted, including shapes that look wrong, and surface them as findings rather than
-throwing — a surveyor that dies on one odd transaction cannot survey. Malformed RLP produces a
-typed error carrying the byte offset at which parsing failed.
+**Decode is lenient.** It must decode anything the chain accepted, including shapes that look
+wrong, and surface them as findings rather than throwing — a surveyor that dies on one odd
+transaction cannot survey. Strict decode is not a flag: it is `decodeFrameTx(raw)` followed by
+`assertValidFrameTx(tx)`, so the strict rules live in one place instead of two. Malformed RLP
+produces a typed error; the byte-offset promise is tracked in `OPEN-ITEMS.md`, since viem's
+`fromRlp` exposes none.
 
 Every error is a typed class with a stable `name`, following viem's error conventions so the
 extension surface composes with viem's own error handling.
@@ -377,7 +388,7 @@ extension surface composes with viem's own error handling.
 ## 8. Testing and repo mechanics
 
 TypeScript in strict mode; Vitest, which is viem's own runner; the package exports a root entry
-point and a `viem-frames` entry point for the extension surface.
+point and a `./viem` entry point (`@jaw.id/frametx-kit/viem`) for the extension surface.
 
 Two suites. The **default suite is hermetic**, running entirely off checked-in fixtures, so CI
 never depends on a testnet staying up. The **`test:live` suite** is opt-in behind an env var

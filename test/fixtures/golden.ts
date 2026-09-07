@@ -2,7 +2,7 @@ import type { FrameTransaction } from '../../src/types.js'
 
 /** Two frames — a targetless VERIFY carrying data, then a SENDER frame with a
  *  target — one SECP256K1 signature with an empty msg, no state budget on
- *  either frame. The shape `scripts/hegota-testnet/frametx.py`'s __main__ builds. */
+ *  either frame. The shape ethrex's `scripts/hegota-testnet/frametx.py` __main__ builds. */
 /** EIP-55 form of `0x…abcd`. viem's `getAddress` — and therefore `decodeFrameTx`
  *  and `parseRpcFrameTransaction` — returns checksummed addresses, so the fixture
  *  is written checksummed and `toEqual` against decoder output holds without case

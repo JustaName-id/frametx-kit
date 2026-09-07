@@ -129,3 +129,45 @@ describe('validateFrameTx', () => {
     expect(() => validateFrameTx(tx)).toThrow(/8 bytes/)
   })
 })
+
+describe('validateFrameTx: single-byte and 32-byte wire fields', () => {
+  // ethrex decodes `flags` as u64 then `u8::try_from`, rejecting with
+  // "Frame flags too large". Bit 8 clears the reserved-bits mask (0xf8) but
+  // the encoder would emit a two-byte scalar for a field the chain reads as one.
+  test('rejects flags that do not fit in one byte', () => {
+    const tx = { ...GOLDEN_TX, frames: [{ ...VERIFY_FRAME, flags: 0x100 }, SENDER_FRAME] }
+    expect(() => validateFrameTx(tx)).toThrow(/flags.*one byte/)
+  })
+
+  // `source_id` and `root` are H256 in ethrex, decoded through the fixed
+  // `[u8; 32]` impl, which fails with InvalidLength for any other size.
+  test('rejects a recent-root sourceId that is not 32 bytes', () => {
+    const tx = {
+      ...GOLDEN_TX,
+      recentRootReferences: [
+        { sourceId: `0x${'11'.repeat(31)}` as const, slot: 1n, root: `0x${'22'.repeat(32)}` as const },
+      ],
+    }
+    expect(() => validateFrameTx(tx)).toThrow(/sourceId must be 32 bytes/)
+  })
+
+  test('rejects a recent-root root that is not 32 bytes', () => {
+    const tx = {
+      ...GOLDEN_TX,
+      recentRootReferences: [
+        { sourceId: `0x${'11'.repeat(32)}` as const, slot: 1n, root: `0x${'22'.repeat(33)}` as const },
+      ],
+    }
+    expect(() => validateFrameTx(tx)).toThrow(/root must be 32 bytes/)
+  })
+
+  test('accepts a well-formed recent-root reference', () => {
+    const tx = {
+      ...GOLDEN_TX,
+      recentRootReferences: [
+        { sourceId: `0x${'11'.repeat(32)}` as const, slot: 1n, root: `0x${'22'.repeat(32)}` as const },
+      ],
+    }
+    expect(() => validateFrameTx(tx)).not.toThrow()
+  })
+})

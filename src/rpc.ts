@@ -169,7 +169,7 @@ export function parseRpcFrameReceipt(json: RpcFrameReceiptJson): FrameReceipt {
  * schema, so a hand-written structural type — `(args: { method: string; ... })`
  * — is NOT satisfied by a real client and `client.extend(frameActions)` would
  * not typecheck. `EIP1193RequestFn` with no schema is, and it accepts the
- * `ethrex_` namespace. A test stub needs one cast to it (see Task 11).
+ * `ethrex_` namespace. A test stub needs one cast to it (see `test/viem.test.ts`).
  */
 export type FrameRpcClient = { request: EIP1193RequestFn }
 

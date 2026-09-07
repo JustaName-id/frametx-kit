@@ -23,7 +23,8 @@ import type { FrameTransaction, RuleSet } from './types.js'
  *
  * The parameter is `FrameRpcClient` — `{ request: EIP1193RequestFn }` — because
  * viem types `request` against the client's RPC schema and a hand-written
- * structural type is not satisfied by a real client (Trap 9).
+ * structural type is not satisfied by a real client (see the last trap in
+ * CONTRIBUTING.md's "Traps specific to this wire format").
  */
 export function frameActions(client: FrameRpcClient) {
   return {
@@ -32,7 +33,8 @@ export function frameActions(client: FrameRpcClient) {
      *
      * The public endpoint serves no raw bytes, so this reads the node's decoded
      * JSON, re-encodes it, and checks the result against the transaction hash
-     * before returning — the same pin Task 9's Oracle 2 applies to every fixture.
+     * before returning — the same pin Oracle 2 in `test/oracles.test.ts` applies
+     * to every captured fixture.
      * A hash mismatch means the envelope layout has moved under us.
      */
     async getFrameTransaction({ hash }: { hash: Hex }): Promise<FrameTransaction> {

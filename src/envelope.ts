@@ -137,9 +137,9 @@ function decodeRecentRootReference(node: RlpTree): RecentRootReference {
  * Decode a type-0x06 frame transaction. Lenient by design: it decodes anything
  * the chain accepted, and does not apply the encode-side structural rules.
  *
- * The spec's "opt-in strict decode" is this function followed by
- * `validateFrameTx` (Task 4) rather than a boolean parameter — same guarantee,
- * and the strict rules stay in one place instead of two.
+ * Strict decode is this function followed by `assertValidFrameTx` (in
+ * `signatures.ts`, which wraps `validateFrameTx` below) rather than a boolean
+ * parameter — same guarantee, and the strict rules stay in one place instead of two.
  */
 export function decodeFrameTx(raw: Hex): FrameTransaction {
   if (!raw.startsWith('0x06'))
@@ -218,7 +218,7 @@ function isExpiryVerifier(frame: Frame): boolean {
  * violates one is producing an invalid transaction, not merely an unrelayable
  * one. Rules that need chain state — nonce values, recent-root windows, the
  * EIP-7825 cap against the block gas limit, the validation prefix itself — are
- * the node's; `simulateFrameTransaction` (Task 8) replays them.
+ * the node's; `simulateFrameTransaction` in `rpc.ts` replays them.
  *
  * Mode 5 (UTXO) rules are omitted: `utxoFramesTime` is unset on this chain and
  * `FrameMode` does not admit 5.
@@ -250,6 +250,14 @@ export function validateFrameTx(tx: FrameTransaction): void {
     throw new FrameEncodeError(
       `at most ${MAX_RECENT_ROOT_REFERENCES} recent-root references, got ${tx.recentRootReferences.length}`,
     )
+  // `source_id` and `root` are H256 in ethrex, decoded through the fixed
+  // `[u8; 32]` impl: any other length fails RLP decode with InvalidLength.
+  for (const [i, ref] of tx.recentRootReferences.entries()) {
+    if (byteLength(ref.sourceId) !== 32)
+      throw new FrameEncodeError(`recentRootReference ${i}: sourceId must be 32 bytes`)
+    if (byteLength(ref.root) !== 32)
+      throw new FrameEncodeError(`recentRootReference ${i}: root must be 32 bytes`)
+  }
 
   if (tx.blobVersionedHashes.length > MAX_BLOBS_PER_TX)
     throw new FrameEncodeError(
@@ -281,6 +289,10 @@ export function validateFrameTx(tx: FrameTransaction): void {
   let expiryFrames = 0
   let cumulativeGas = 0n
   for (const [i, frame] of tx.frames.entries()) {
+    // ethrex decodes `flags` as u64 then `u8::try_from` ("Frame flags too
+    // large"). Check the width before the mask: bit 8 and up clear 0xf8.
+    if (frame.flags < 0 || frame.flags > 0xff)
+      throw new FrameEncodeError(`frame ${i}: flags must fit in one byte, got ${frame.flags}`)
     if ((frame.flags & RESERVED_FLAG_BITS) !== 0)
       throw new FrameEncodeError(`frame ${i}: flag bits 3-7 are reserved and must be zero`)
     if (frame.value !== 0n && frame.mode !== 2)

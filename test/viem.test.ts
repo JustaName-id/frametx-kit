@@ -69,7 +69,8 @@ describe('frameActions', () => {
 
   test('composes with client.extend on a real viem client', () => {
     // No network: this is a typecheck of the extension surface plus a shape check.
-    // It is the assertion Trap 9 is about — a structural `request` type fails here.
+    // A hand-written structural `request` type fails here; see CONTRIBUTING.md's
+    // last wire-format trap and `FrameRpcClient` in src/rpc.ts.
     const client = createPublicClient({ transport: http('http://127.0.0.1:1') }).extend(
       frameActions,
     )

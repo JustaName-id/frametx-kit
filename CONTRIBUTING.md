@@ -11,8 +11,12 @@ transactions as the hegota-testnet chain (chain ID `8141`) accepts them. That en
 a composition of three draft EIPs that none of them specifies on its own: EIP-8141
 frames, EIP-8250 keyed nonces, EIP-8272 recent-root references.
 
-It is a deliberate second implementation. The reference client is ethrex, on its
-`hegota-testnet` branch, and this library exists partly to disagree with it usefully. A
+It is a deliberate second implementation. The reference client is
+[ethrex, on its `hegota-testnet` branch](https://github.com/lambdaclass/ethrex/tree/hegota-testnet),
+and this library exists partly to disagree with it usefully. Every `.rs`, `.py` and
+`docs/*.md` path cited in this repository's docs and comments — `transaction.rs`,
+`frame_tx_wire_tests.rs`, `frametx.py` and the rest — is a path in that repository, not in
+this one. A
 second implementation that hardcodes published figures catches a class of drift that a
 derived-constant test suite cannot: ethrex's own suite missed its intrinsic gas dropping
 from 15000 to 12000 across 1372 tests, because it derived the expected value from the
