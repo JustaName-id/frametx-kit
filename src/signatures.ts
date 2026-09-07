@@ -85,8 +85,14 @@ export function resolveSigner(tx: FrameTransaction, index: number): Address {
   return sig.signer ?? tx.sender
 }
 
-/** Recover the address that produced a SECP256K1 frame signature. */
-export function recoverFrameSigner(
+/**
+ * Recover the address that produced a SECP256K1 frame signature.
+ *
+ * `async` deliberately: the guard clauses below would otherwise throw
+ * synchronously out of a function typed `Promise<Address>`, so a caller's
+ * `.catch()` (or `rejects.toThrow`) would never see them.
+ */
+export async function recoverFrameSigner(
   tx: FrameTransaction,
   index: number,
 ): Promise<Address> {
@@ -161,49 +167,13 @@ export async function signFrameTx(
  * chain data in the survey suite, most of which is deliberately re-encoding
  * transactions this library did not construct. Call `assertValidFrameTx(tx)`
  * yourself before `encodeFrameTx(tx)` when building a transaction to relay.
+ *
+ * Every structural rule — field widths and the byte-alignment of every hex
+ * field included — lives in `validateFrameTx`, so this adds exactly the one
+ * thing that function cannot see: signature canonicality, which needs the
+ * scheme-specific curve order.
  */
 export function assertValidFrameTx(tx: FrameTransaction): void {
   validateFrameTx(tx)
-
   tx.signatures.forEach((sig, i) => assertCanonicalSignature(sig, i))
-
-  tx.frames.forEach((frame, i) => {
-    try {
-      byteLength(frame.data)
-    } catch (err) {
-      if (err instanceof FrameRlpError)
-        throw new FrameEncodeError(`frame ${i}: data ${err.message}`)
-      throw err
-    }
-  })
-
-  tx.signatures.forEach((sig, i) => {
-    for (const [field, value] of [
-      ['msg', sig.msg],
-      ['signature', sig.signature],
-    ] as const) {
-      try {
-        byteLength(value)
-      } catch (err) {
-        if (err instanceof FrameRlpError)
-          throw new FrameEncodeError(`signature ${i}: ${field} ${err.message}`)
-        throw err
-      }
-    }
-  })
-
-  tx.recentRootReferences.forEach((ref, i) => {
-    for (const [field, value] of [
-      ['sourceId', ref.sourceId],
-      ['root', ref.root],
-    ] as const) {
-      try {
-        byteLength(value)
-      } catch (err) {
-        if (err instanceof FrameRlpError)
-          throw new FrameEncodeError(`recentRootReference ${i}: ${field} ${err.message}`)
-        throw err
-      }
-    }
-  })
 }

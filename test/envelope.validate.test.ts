@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import { EXPIRY_VERIFIER, validateFrameTx } from '../src/envelope.js'
+import { FrameEncodeError } from '../src/errors.js'
 import { GOLDEN_TX } from './fixtures/golden.js'
 
 const VERIFY_FRAME = GOLDEN_TX.frames[0]! // mode 1, flags 3, no target
@@ -169,5 +170,178 @@ describe('validateFrameTx: single-byte and 32-byte wire fields', () => {
       ],
     }
     expect(() => validateFrameTx(tx)).not.toThrow()
+  })
+})
+
+/**
+ * ethrex's `FrameTransaction` decodes each numeric field at a fixed width —
+ * `chain_id`, `nonce_seq`, `max_priority_fee_per_gas`, `max_fee_per_gas` and
+ * `RecentRootReference::slot` as u64; `max_fee_per_blob_gas`, `nonce_keys[]`
+ * and `Frame::value` as U256 — and `static_left_pad` returns `InvalidLength`
+ * for anything wider. A wider value encodes to well-formed RLP here and then
+ * cannot be decoded by the node at all, so it has to be caught on this side.
+ */
+describe('validateFrameTx: numeric field widths', () => {
+  const U64_MAX = 2n ** 64n - 1n
+  const U256_MAX = 2n ** 256n - 1n
+  const REF = {
+    sourceId: `0x${'11'.repeat(32)}`,
+    root: `0x${'22'.repeat(32)}`,
+  } as const
+
+  test('accepts chainId at 2**64 - 1', () => {
+    expect(() => validateFrameTx({ ...GOLDEN_TX, chainId: U64_MAX })).not.toThrow()
+  })
+
+  test('rejects chainId at 2**64', () => {
+    expect(() => validateFrameTx({ ...GOLDEN_TX, chainId: 2n ** 64n })).toThrow(
+      /chainId must fit in 64 bits/,
+    )
+  })
+
+  test('accepts maxPriorityFeePerGas at 2**64 - 1', () => {
+    expect(() =>
+      validateFrameTx({ ...GOLDEN_TX, maxPriorityFeePerGas: U64_MAX }),
+    ).not.toThrow()
+  })
+
+  test('rejects maxPriorityFeePerGas at 2**64', () => {
+    expect(() =>
+      validateFrameTx({ ...GOLDEN_TX, maxPriorityFeePerGas: 2n ** 64n }),
+    ).toThrow(/maxPriorityFeePerGas must fit in 64 bits/)
+  })
+
+  test('accepts maxFeePerGas at 2**64 - 1', () => {
+    expect(() => validateFrameTx({ ...GOLDEN_TX, maxFeePerGas: U64_MAX })).not.toThrow()
+  })
+
+  test('rejects maxFeePerGas at 2**64', () => {
+    expect(() => validateFrameTx({ ...GOLDEN_TX, maxFeePerGas: 2n ** 64n })).toThrow(
+      /maxFeePerGas must fit in 64 bits/,
+    )
+  })
+
+  test('accepts a recent-root slot at 2**64 - 1', () => {
+    const tx = { ...GOLDEN_TX, recentRootReferences: [{ ...REF, slot: U64_MAX }] }
+    expect(() => validateFrameTx(tx)).not.toThrow()
+  })
+
+  test('rejects a recent-root slot at 2**64', () => {
+    const tx = { ...GOLDEN_TX, recentRootReferences: [{ ...REF, slot: 2n ** 64n }] }
+    expect(() => validateFrameTx(tx)).toThrow(
+      /recentRootReference 0: slot must fit in 64 bits/,
+    )
+  })
+
+  test('accepts a nonce key at 2**256 - 1', () => {
+    expect(() => validateFrameTx({ ...GOLDEN_TX, nonceKeys: [U256_MAX] })).not.toThrow()
+  })
+
+  test('rejects a nonce key at 2**256', () => {
+    expect(() => validateFrameTx({ ...GOLDEN_TX, nonceKeys: [2n ** 256n] })).toThrow(
+      /nonceKeys\[0\] must fit in 256 bits/,
+    )
+  })
+
+  test('accepts a frame value at 2**256 - 1', () => {
+    const tx = { ...GOLDEN_TX, frames: [VERIFY_FRAME, { ...SENDER_FRAME, value: U256_MAX }] }
+    expect(() => validateFrameTx(tx)).not.toThrow()
+  })
+
+  test('rejects a frame value at 2**256', () => {
+    const tx = { ...GOLDEN_TX, frames: [VERIFY_FRAME, { ...SENDER_FRAME, value: 2n ** 256n }] }
+    expect(() => validateFrameTx(tx)).toThrow(/frame 1: value must fit in 256 bits/)
+  })
+
+  test('rejects maxFeePerBlobGas at 2**256', () => {
+    const tx = {
+      ...GOLDEN_TX,
+      blobVersionedHashes: [`0x01${'ab'.repeat(31)}` as const],
+      maxFeePerBlobGas: 2n ** 256n,
+    }
+    expect(() => validateFrameTx(tx)).toThrow(/maxFeePerBlobGas must fit in 256 bits/)
+  })
+
+  test('rejects a negative fee', () => {
+    expect(() => validateFrameTx({ ...GOLDEN_TX, maxFeePerGas: -1n })).toThrow(
+      /maxFeePerGas must not be negative/,
+    )
+  })
+
+  test('rejects a negative frame gas limit', () => {
+    const tx = {
+      ...GOLDEN_TX,
+      frames: [VERIFY_FRAME, { ...SENDER_FRAME, limits: { execution: -1n, state: 0n } }],
+    }
+    expect(() => validateFrameTx(tx)).toThrow(
+      /frame 1: limits.execution must not be negative/,
+    )
+  })
+})
+
+/**
+ * Malformed hex in a wire field is an encode-side violation, so it must throw
+ * `FrameEncodeError` and not the `FrameRlpError` that `byteLength` raises
+ * internally — regardless of which field carries the defect.
+ */
+describe('validateFrameTx: malformed hex fields throw FrameEncodeError', () => {
+  test('an odd-length signature msg', () => {
+    const tx = {
+      ...GOLDEN_TX,
+      signatures: [{ ...GOLDEN_TX.signatures[0]!, msg: '0x123' as const }],
+    }
+    expect(() => validateFrameTx(tx)).toThrow(FrameEncodeError)
+    expect(() => validateFrameTx(tx)).toThrow(/signature 0: msg/)
+  })
+
+  test('an odd-length recent-root sourceId', () => {
+    const tx = {
+      ...GOLDEN_TX,
+      recentRootReferences: [
+        { sourceId: `0x${'11'.repeat(31)}1` as const, slot: 1n, root: `0x${'22'.repeat(32)}` as const },
+      ],
+    }
+    expect(() => validateFrameTx(tx)).toThrow(FrameEncodeError)
+    expect(() => validateFrameTx(tx)).toThrow(/recentRootReference 0: sourceId/)
+  })
+
+  test('a non-hex recent-root root', () => {
+    const tx = {
+      ...GOLDEN_TX,
+      recentRootReferences: [
+        { sourceId: `0x${'11'.repeat(32)}` as const, slot: 1n, root: `0x${'zz'.repeat(32)}` as const },
+      ],
+    }
+    expect(() => validateFrameTx(tx)).toThrow(FrameEncodeError)
+    expect(() => validateFrameTx(tx)).toThrow(/recentRootReference 0: root/)
+  })
+
+  test('an odd-length frame data field', () => {
+    const tx = {
+      ...GOLDEN_TX,
+      frames: [{ ...VERIFY_FRAME, data: '0x123' as const }, SENDER_FRAME],
+    }
+    expect(() => validateFrameTx(tx)).toThrow(FrameEncodeError)
+    expect(() => validateFrameTx(tx)).toThrow(/frame 0: data/)
+  })
+
+  test('an odd-length ARBITRARY signature', () => {
+    const tx = {
+      ...GOLDEN_TX,
+      signatures: [
+        { scheme: 0 as const, signer: null, msg: '0x' as const, signature: '0x123' as const },
+      ],
+    }
+    expect(() => validateFrameTx(tx)).toThrow(FrameEncodeError)
+    expect(() => validateFrameTx(tx)).toThrow(/signature 0: signature/)
+  })
+
+  test('an odd-length blob versioned hash', () => {
+    const tx = {
+      ...GOLDEN_TX,
+      blobVersionedHashes: [`0x01${'ab'.repeat(31)}c` as const],
+    }
+    expect(() => validateFrameTx(tx)).toThrow(FrameEncodeError)
+    expect(() => validateFrameTx(tx)).toThrow(/blob hash 0/)
   })
 })

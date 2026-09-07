@@ -8,7 +8,7 @@ import {
   resolveSigner,
   signFrameTx,
 } from '../src/signatures.js'
-import { FrameEncodeError, FrameError } from '../src/errors.js'
+import { FrameEncodeError } from '../src/errors.js'
 import { GOLDEN_TX } from './fixtures/golden.js'
 
 const PRIVATE_KEY = `0x${'11'.repeat(32)}` as const
@@ -115,6 +115,38 @@ describe('signFrameTx and recoverFrameSigner', () => {
     await expect(signFrameTx(tx, PRIVATE_KEY)).rejects.toThrow(new RegExp(other, 'i'))
   })
 
+  // The guard clauses are inside a function typed `Promise<Address>`. If it is
+  // not `async` they throw synchronously and a `.catch()` chain — or these
+  // assertions — never see them.
+  test('recoverFrameSigner rejects rather than throwing for a missing index', async () => {
+    await expect(recoverFrameSigner(GOLDEN_TX, 7)).rejects.toThrow(
+      /no signature at index 7/,
+    )
+  })
+
+  test('recoverFrameSigner rejects rather than throwing for an ARBITRARY entry', async () => {
+    const tx = {
+      ...GOLDEN_TX,
+      signatures: [
+        { scheme: 0 as const, signer: null, msg: '0x' as const, signature: '0xdeadbeef' as const },
+      ],
+    }
+    await expect(recoverFrameSigner(tx, 0)).rejects.toThrow(/only defined for secp256k1/)
+  })
+
+  test('recoverFrameSigner rejects rather than throwing for a non-canonical signature', async () => {
+    const tx = {
+      ...GOLDEN_TX,
+      signatures: [
+        {
+          ...GOLDEN_TX.signatures[0]!,
+          signature: `0x1b${'11'.repeat(32)}${'22'.repeat(32)}` as const,
+        },
+      ],
+    }
+    await expect(recoverFrameSigner(tx, 0)).rejects.toThrow(/bare recovery id/)
+  })
+
   test('signing throws when signer is null but sender is a different address', async () => {
     const account = privateKeyToAccount(PRIVATE_KEY)
     const otherSender = privateKeyToAccount(`0x${'33'.repeat(32)}` as const).address
@@ -152,7 +184,7 @@ describe('assertValidFrameTx', () => {
       ...GOLDEN_TX,
       frames: [{ ...GOLDEN_TX.frames[0]!, data: '0x123' as const }, GOLDEN_TX.frames[1]!],
     }
-    expect(() => assertValidFrameTx(tx)).toThrow(FrameError)
+    expect(() => assertValidFrameTx(tx)).toThrow(FrameEncodeError)
   })
 
   test('rejects a non-hex data field on a frame', () => {
@@ -160,6 +192,6 @@ describe('assertValidFrameTx', () => {
       ...GOLDEN_TX,
       frames: [{ ...GOLDEN_TX.frames[0]!, data: '0xzz11' as const }, GOLDEN_TX.frames[1]!],
     }
-    expect(() => assertValidFrameTx(tx)).toThrow(FrameError)
+    expect(() => assertValidFrameTx(tx)).toThrow(FrameEncodeError)
   })
 })

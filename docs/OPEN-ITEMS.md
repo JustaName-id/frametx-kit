@@ -15,10 +15,14 @@ Nothing here is blocking. In rough priority order:
   field entirely. Implementing the head reference arm as a gas-only computation is the
   natural next step, and the spec explicitly allows it without a second serializer.
 - **Fixture coverage gaps that are facts about the chain, not omissions:** no captured
-  transaction uses signature scheme 0 (ARBITRARY) or 2 (P256), frame mode 0, or a
-  targetless value-carrying frame — the last is the only shape where `'chain'` and
-  `'pins'` diverge, so the divergence survey's positive branch is exercised only offline.
-  Re-run `bunx tsx scripts/capture-fixtures.ts` when the chain produces such a transaction.
+  transaction uses signature scheme 2 (P256) or a targetless value-carrying frame — the
+  latter is the only shape where `'chain'` and `'pins'` diverge, so the divergence survey's
+  positive branch is exercised only offline. Scheme 0 (ARBITRARY) and frame mode 0 *are*
+  covered, both by
+  `test/fixtures/chain/0xa5176324860de896e541bb12914e086f95bd6dadd12679cea1c57b9c51c856be.json`
+  (block 42,241): two mode-0 frames and a single 24,820-byte ARBITRARY signature.
+  Re-run `bunx tsx scripts/capture-fixtures.ts` when the chain produces a transaction
+  covering one of the remaining gaps.
 - **Fixtures expire.** They record the client version and genesis hash they were taken
   against, and the oracle suite asserts the genesis hash, so a re-genesis fails loudly
   rather than silently. This chain is already on its third genesis.

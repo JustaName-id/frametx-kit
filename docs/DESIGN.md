@@ -380,7 +380,11 @@ wrong, and surface them as findings rather than throwing — a surveyor that die
 transaction cannot survey. Strict decode is not a flag: it is `decodeFrameTx(raw)` followed by
 `assertValidFrameTx(tx)`, so the strict rules live in one place instead of two. Malformed RLP
 produces a typed error; the byte-offset promise is tracked in `OPEN-ITEMS.md`, since viem's
-`fromRlp` exposes none.
+`fromRlp` exposes none. Decode does reject **non-canonical RLP** — a long-form encoding of a
+single-byte scalar, say — because ethrex rejects those bytes at RLP decode and viem's `fromRlp`
+silently canonicalizes them; that is a well-formedness rule about the bytes, not a structural
+rule about the transaction, so it does not make decode any less lenient about the shapes the
+chain actually accepted.
 
 Every error is a typed class with a stable `name`, following viem's error conventions so the
 extension surface composes with viem's own error handling.

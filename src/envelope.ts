@@ -9,7 +9,7 @@ import type {
   SigScheme,
 } from './types.js'
 import { rlpUint, byteLength, parseRlpUint } from './rlp.js'
-import { FrameDecodeError, FrameEncodeError } from './errors.js'
+import { FrameDecodeError, FrameEncodeError, FrameRlpError } from './errors.js'
 
 type RlpTree = Hex | RlpTree[]
 
@@ -133,9 +133,42 @@ function decodeRecentRootReference(node: RlpTree): RecentRootReference {
   }
 }
 
+function decodeFields(fields: RlpTree[], fees: RlpTree[], sender: Address): FrameTransaction {
+  return {
+    chainId: parseRlpUint(asHex(fields[0]!, 'chainId')),
+    nonceKeys: asList(fields[1]!, 'nonceKeys').map((k) =>
+      parseRlpUint(asHex(k, 'nonceKeys[]')),
+    ),
+    nonceSeq: parseRlpUint(asHex(fields[2]!, 'nonceSeq')),
+    sender,
+    frames: asList(fields[4]!, 'frames').map(decodeFrame),
+    signatures: asList(fields[5]!, 'signatures').map(decodeSignature),
+    maxPriorityFeePerGas: parseRlpUint(asHex(fees[0]!, 'maxPriorityFeePerGas')),
+    maxFeePerGas: parseRlpUint(asHex(fees[1]!, 'maxFeePerGas')),
+    maxFeePerBlobGas: parseRlpUint(asHex(fees[2]!, 'maxFeePerBlobGas')),
+    blobVersionedHashes: asList(fields[7]!, 'blobVersionedHashes').map((h) =>
+      asHex(h, 'blobVersionedHashes[]'),
+    ),
+    recentRootReferences: asList(fields[8]!, 'recentRootReferences').map(
+      decodeRecentRootReference,
+    ),
+  }
+}
+
 /**
- * Decode a type-0x06 frame transaction. Lenient by design: it decodes anything
- * the chain accepted, and does not apply the encode-side structural rules.
+ * Decode a type-0x06 frame transaction. Lenient about *shapes*: it decodes
+ * anything the chain accepted, and does not apply the encode-side structural
+ * rules.
+ *
+ * It is not lenient about RLP well-formedness. viem's `fromRlp` accepts
+ * non-canonical encodings — the scalar 7 written long-form as `0x8107` rather
+ * than `0x07`, say — and quietly returns the canonical value, so a decode
+ * followed by an encode would launder bytes the node rejects at RLP decode into
+ * bytes it accepts, with nothing downstream able to tell. ethrex rejects those
+ * bytes, so this function does too: the decoded transaction is re-encoded and
+ * compared to the input (case-insensitively — viem emits lowercase hex, callers
+ * may pass uppercase), and a mismatch throws `FrameDecodeError`. Trailing bytes
+ * after the body are already rejected by `fromRlp` itself.
  *
  * Strict decode is this function followed by `assertValidFrameTx` (in
  * `signatures.ts`, which wraps `validateFrameTx` below) rather than a boolean
@@ -164,25 +197,27 @@ export function decodeFrameTx(raw: Hex): FrameTransaction {
   const sender = asAddressOrNull(fields[3]!, 'sender')
   if (sender === null) throw new FrameDecodeError('sender may not be empty')
 
-  return {
-    chainId: parseRlpUint(asHex(fields[0]!, 'chainId')),
-    nonceKeys: asList(fields[1]!, 'nonceKeys').map((k) =>
-      parseRlpUint(asHex(k, 'nonceKeys[]')),
-    ),
-    nonceSeq: parseRlpUint(asHex(fields[2]!, 'nonceSeq')),
-    sender,
-    frames: asList(fields[4]!, 'frames').map(decodeFrame),
-    signatures: asList(fields[5]!, 'signatures').map(decodeSignature),
-    maxPriorityFeePerGas: parseRlpUint(asHex(fees[0]!, 'maxPriorityFeePerGas')),
-    maxFeePerGas: parseRlpUint(asHex(fees[1]!, 'maxFeePerGas')),
-    maxFeePerBlobGas: parseRlpUint(asHex(fees[2]!, 'maxFeePerBlobGas')),
-    blobVersionedHashes: asList(fields[7]!, 'blobVersionedHashes').map((h) =>
-      asHex(h, 'blobVersionedHashes[]'),
-    ),
-    recentRootReferences: asList(fields[8]!, 'recentRootReferences').map(
-      decodeRecentRootReference,
-    ),
+  // `parseRlpUint` reports a non-minimal scalar (a leading zero byte) as an RLP
+  // error; on this path it is a malformed body, so it surfaces as a decode error
+  // like the long-form case caught by the re-encode comparison below.
+  let tx: FrameTransaction
+  try {
+    tx = decodeFields(fields, fees, sender)
+  } catch (err) {
+    if (err instanceof FrameRlpError) throw new FrameDecodeError(err.message)
+    throw err
   }
+
+  // Canonicality: viem's `fromRlp` silently accepts long-form encodings of short
+  // strings and non-minimal length prefixes, which ethrex rejects. Comparing a
+  // re-encoding to the input is the cheapest complete check, and it holds for
+  // every transaction the chain actually accepted.
+  if (encodeFrameTx(tx).toLowerCase() !== raw.toLowerCase())
+    throw new FrameDecodeError(
+      're-encoding does not reproduce the input bytes: non-canonical RLP, which ethrex rejects at decode',
+    )
+
+  return tx
 }
 
 export const MAX_FRAMES = 64
@@ -201,9 +236,48 @@ const RESERVED_FLAG_BITS = 0xf8 // bits 3-7
 const ZERO_ADDRESS = `0x${'00'.repeat(20)}` as Address
 const U64_MAX = 2n ** 64n - 1n
 const I64_MAX = 2n ** 63n - 1n
+const U256_MAX = 2n ** 256n - 1n
 
 function sameAddress(a: Address, b: Address): boolean {
   return a.toLowerCase() === b.toLowerCase()
+}
+
+function assertNonNegative(value: bigint, what: string): void {
+  if (value < 0n)
+    throw new FrameEncodeError(`${what} must not be negative, got ${value}`)
+}
+
+/**
+ * Bound a numeric wire field to the width ethrex decodes it at.
+ *
+ * ethrex's RLP integer decoder (`static_left_pad`) returns `InvalidLength` for
+ * any value wider than the destination type, so an out-of-range value here
+ * encodes to perfectly well-formed RLP that the node cannot decode at all.
+ * Without this the failure surfaces as an opaque relay rejection.
+ */
+function assertUint(value: bigint, bits: 64 | 256, what: string): void {
+  assertNonNegative(value, what)
+  const max = bits === 64 ? U64_MAX : U256_MAX
+  if (value > max)
+    throw new FrameEncodeError(
+      `${what} must fit in ${bits} bits (at most 2**${bits} - 1), got ${value}`,
+    )
+}
+
+/**
+ * `byteLength`, reporting a malformed hex field as an encode error rather than
+ * an RLP error. Every structural string check in `validateFrameTx` goes through
+ * this, so an odd-length or non-hex field throws the same class as any other
+ * encode-side violation.
+ */
+function checkedByteLength(value: Hex, what: string): number {
+  try {
+    return byteLength(value)
+  } catch (err) {
+    if (err instanceof FrameRlpError)
+      throw new FrameEncodeError(`${what}: ${err.message}`)
+    throw err
+  }
 }
 
 function isExpiryVerifier(frame: Frame): boolean {
@@ -224,6 +298,16 @@ function isExpiryVerifier(frame: Frame): boolean {
  * `FrameMode` does not admit 5.
  */
 export function validateFrameTx(tx: FrameTransaction): void {
+  // Field widths, before anything else: these are the widths ethrex's decoder
+  // reads them at (`chain_id`, `nonce_seq`, both non-blob fees and
+  // `RecentRootReference::slot` are u64; `max_fee_per_blob_gas`, the nonce keys
+  // and `Frame::value` are U256).
+  assertUint(tx.chainId, 64, 'chainId')
+  assertUint(tx.nonceSeq, 64, 'nonceSeq')
+  assertUint(tx.maxPriorityFeePerGas, 64, 'maxPriorityFeePerGas')
+  assertUint(tx.maxFeePerGas, 64, 'maxFeePerGas')
+  assertUint(tx.maxFeePerBlobGas, 256, 'maxFeePerBlobGas')
+
   if (sameAddress(tx.sender, ZERO_ADDRESS))
     throw new FrameEncodeError('sender must not be the zero address')
 
@@ -236,6 +320,7 @@ export function validateFrameTx(tx: FrameTransaction): void {
     throw new FrameEncodeError(
       `nonceKeys must hold between 1 and ${MAX_NONCE_KEYS} entries, got ${tx.nonceKeys.length}`,
     )
+  for (const [i, key] of tx.nonceKeys.entries()) assertUint(key, 256, `nonceKeys[${i}]`)
   for (let i = 1; i < tx.nonceKeys.length; i++)
     if (tx.nonceKeys[i - 1]! >= tx.nonceKeys[i]!)
       throw new FrameEncodeError('nonceKeys must be strictly increasing')
@@ -253,10 +338,11 @@ export function validateFrameTx(tx: FrameTransaction): void {
   // `source_id` and `root` are H256 in ethrex, decoded through the fixed
   // `[u8; 32]` impl: any other length fails RLP decode with InvalidLength.
   for (const [i, ref] of tx.recentRootReferences.entries()) {
-    if (byteLength(ref.sourceId) !== 32)
+    if (checkedByteLength(ref.sourceId, `recentRootReference ${i}: sourceId`) !== 32)
       throw new FrameEncodeError(`recentRootReference ${i}: sourceId must be 32 bytes`)
-    if (byteLength(ref.root) !== 32)
+    if (checkedByteLength(ref.root, `recentRootReference ${i}: root`) !== 32)
       throw new FrameEncodeError(`recentRootReference ${i}: root must be 32 bytes`)
+    assertUint(ref.slot, 64, `recentRootReference ${i}: slot`)
   }
 
   if (tx.blobVersionedHashes.length > MAX_BLOBS_PER_TX)
@@ -264,7 +350,7 @@ export function validateFrameTx(tx: FrameTransaction): void {
       `at most ${MAX_BLOBS_PER_TX} blobs, got ${tx.blobVersionedHashes.length}`,
     )
   for (const [i, hash] of tx.blobVersionedHashes.entries())
-    if (byteLength(hash) !== 32 || !hash.startsWith('0x01'))
+    if (checkedByteLength(hash, `blob hash ${i}`) !== 32 || !hash.startsWith('0x01'))
       throw new FrameEncodeError(
         `blob hash ${i}: must be 32 bytes and carry the KZG version byte 0x01`,
       )
@@ -274,12 +360,15 @@ export function validateFrameTx(tx: FrameTransaction): void {
     )
 
   for (const [i, sig] of tx.signatures.entries()) {
+    // Every scheme, ARBITRARY included: the bytes still have to be a byte string.
+    checkedByteLength(sig.signature, `signature ${i}: signature`)
     if (sig.scheme === 0 && sig.signer !== null)
       throw new FrameEncodeError(`signature ${i}: an ARBITRARY entry must have an empty signer`)
     if (sig.msg !== '0x') {
-      if (byteLength(sig.msg) !== 32)
+      const msgBytes = checkedByteLength(sig.msg, `signature ${i}: msg`)
+      if (msgBytes !== 32)
         throw new FrameEncodeError(
-          `signature ${i}: msg must be empty or 32 bytes, got ${byteLength(sig.msg)}`,
+          `signature ${i}: msg must be empty or 32 bytes, got ${msgBytes}`,
         )
       if (/^0x0+$/.test(sig.msg))
         throw new FrameEncodeError(`signature ${i}: an explicit msg must not be the zero digest`)
@@ -289,17 +378,21 @@ export function validateFrameTx(tx: FrameTransaction): void {
   let expiryFrames = 0
   let cumulativeGas = 0n
   for (const [i, frame] of tx.frames.entries()) {
+    const dataBytes = checkedByteLength(frame.data, `frame ${i}: data`)
     // ethrex decodes `flags` as u64 then `u8::try_from` ("Frame flags too
     // large"). Check the width before the mask: bit 8 and up clear 0xf8.
     if (frame.flags < 0 || frame.flags > 0xff)
       throw new FrameEncodeError(`frame ${i}: flags must fit in one byte, got ${frame.flags}`)
     if ((frame.flags & RESERVED_FLAG_BITS) !== 0)
       throw new FrameEncodeError(`frame ${i}: flag bits 3-7 are reserved and must be zero`)
+    assertUint(frame.value, 256, `frame ${i}: value`)
     if (frame.value !== 0n && frame.mode !== 2)
       throw new FrameEncodeError(`frame ${i}: only SENDER frames may carry value`)
 
     // ethrex bounds both dimensions at i64::MAX, stricter than the EIP's 2**64-1,
     // so its i64 state-gas accounting cannot overflow (transaction.rs:2924-2950).
+    assertNonNegative(frame.limits.execution, `frame ${i}: limits.execution`)
+    assertNonNegative(frame.limits.state, `frame ${i}: limits.state`)
     if (frame.limits.execution > I64_MAX)
       throw new FrameEncodeError(`frame ${i}: execution limit exceeds 2**63 - 1`)
     cumulativeGas += frame.limits.execution + frame.limits.state
@@ -312,7 +405,7 @@ export function validateFrameTx(tx: FrameTransaction): void {
         throw new FrameEncodeError(`frame ${i}: more than one expiry verifier frame`)
       if (frame.flags !== 0)
         throw new FrameEncodeError(`frame ${i}: an expiry verifier frame must have flags 0`)
-      if (byteLength(frame.data) !== 8)
+      if (dataBytes !== 8)
         throw new FrameEncodeError(`frame ${i}: expiry verifier data must be 8 bytes`)
       if (frame.limits.state !== 0n)
         throw new FrameEncodeError(`frame ${i}: an expiry verifier frame must have limits.state 0`)
