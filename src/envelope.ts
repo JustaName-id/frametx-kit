@@ -280,6 +280,18 @@ function checkedByteLength(value: Hex, what: string): number {
   }
 }
 
+/**
+ * A 20-byte address field. `Address` is `0x${string}`, so a wrong-width value
+ * typechecks; viem's `toRlp` then left-pads odd-length hex and the encoder emits
+ * a field ethrex's H160 decoder refuses with `InvalidLength`. `asAddressOrNull`
+ * already enforces this width on the way in, so the encode side has to match.
+ */
+function assertAddressWidth(value: Address, what: string): void {
+  const bytes = checkedByteLength(value, what)
+  if (bytes !== 20)
+    throw new FrameEncodeError(`${what} must be 20 bytes, got ${bytes}`)
+}
+
 function isExpiryVerifier(frame: Frame): boolean {
   return frame.mode === 1 && frame.target !== null && sameAddress(frame.target, EXPIRY_VERIFIER)
 }
@@ -308,6 +320,7 @@ export function validateFrameTx(tx: FrameTransaction): void {
   assertUint(tx.maxFeePerGas, 64, 'maxFeePerGas')
   assertUint(tx.maxFeePerBlobGas, 256, 'maxFeePerBlobGas')
 
+  assertAddressWidth(tx.sender, 'sender')
   if (sameAddress(tx.sender, ZERO_ADDRESS))
     throw new FrameEncodeError('sender must not be the zero address')
 
@@ -364,6 +377,7 @@ export function validateFrameTx(tx: FrameTransaction): void {
     checkedByteLength(sig.signature, `signature ${i}: signature`)
     if (sig.scheme === 0 && sig.signer !== null)
       throw new FrameEncodeError(`signature ${i}: an ARBITRARY entry must have an empty signer`)
+    if (sig.signer !== null) assertAddressWidth(sig.signer, `signature ${i}: signer`)
     if (sig.msg !== '0x') {
       const msgBytes = checkedByteLength(sig.msg, `signature ${i}: msg`)
       if (msgBytes !== 32)
@@ -378,6 +392,7 @@ export function validateFrameTx(tx: FrameTransaction): void {
   let expiryFrames = 0
   let cumulativeGas = 0n
   for (const [i, frame] of tx.frames.entries()) {
+    if (frame.target !== null) assertAddressWidth(frame.target, `frame ${i}: target`)
     const dataBytes = checkedByteLength(frame.data, `frame ${i}: data`)
     // ethrex decodes `flags` as u64 then `u8::try_from` ("Frame flags too
     // large"). Check the width before the mask: bit 8 and up clear 0xf8.

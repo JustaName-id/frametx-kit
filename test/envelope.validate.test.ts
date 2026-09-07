@@ -17,6 +17,39 @@ describe('validateFrameTx', () => {
     ).toThrow(/zero address/)
   })
 
+  // `Address` is `0x${string}`, so a wrong-width address needs no cast to reach
+  // the encoder, and viem's `toRlp` left-pads odd-length hex rather than
+  // refusing it. `asAddressOrNull` rejects these widths on the decode side.
+  test('rejects a sender that is not 20 bytes', () => {
+    expect(() =>
+      validateFrameTx({ ...GOLDEN_TX, sender: `0x${'aa'.repeat(19)}` }),
+    ).toThrow(/sender must be 20 bytes, got 19/)
+  })
+
+  test('rejects a signature signer that is not 20 bytes', () => {
+    const tx = {
+      ...GOLDEN_TX,
+      signatures: [{ ...GOLDEN_TX.signatures[0]!, signer: `0x${'aa'.repeat(21)}` as const }],
+    }
+    expect(() => validateFrameTx(tx)).toThrow(/signature 0: signer must be 20 bytes, got 21/)
+  })
+
+  test('rejects a frame target that is not 20 bytes', () => {
+    const tx = {
+      ...GOLDEN_TX,
+      frames: [{ ...SENDER_FRAME, target: `0x${'bb'.repeat(21)}` as const }],
+    }
+    expect(() => validateFrameTx(tx)).toThrow(/frame 0: target must be 20 bytes, got 21/)
+  })
+
+  test('rejects an address field that is not byte-aligned', () => {
+    const tx = {
+      ...GOLDEN_TX,
+      frames: [{ ...SENDER_FRAME, target: '0xabc' as const }],
+    }
+    expect(() => validateFrameTx(tx)).toThrow(/not byte-aligned/)
+  })
+
   test('rejects value on a non-SENDER frame', () => {
     const tx = { ...GOLDEN_TX, frames: [{ ...VERIFY_FRAME, value: 1n }, SENDER_FRAME] }
     expect(() => validateFrameTx(tx)).toThrow(/only SENDER frames/)
