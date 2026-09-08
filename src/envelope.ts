@@ -183,12 +183,12 @@ export function decodeFrameTx(raw: Hex): FrameTransaction {
   try {
     tree = fromRlp(body, 'hex') as RlpTree
   } catch (cause) {
-    throw new FrameDecodeError(`malformed RLP body: ${(cause as Error).message}`, 1)
+    throw new FrameDecodeError(`malformed RLP body: ${(cause as Error).message}`)
   }
 
   const fields = asList(tree, 'envelope')
   if (fields.length !== 9)
-    throw new FrameDecodeError(`envelope must have 9 fields, got ${fields.length}`, 1)
+    throw new FrameDecodeError(`envelope must have 9 fields, got ${fields.length}`)
 
   const fees = asList(fields[6]!, 'fees')
   if (fees.length !== 3)

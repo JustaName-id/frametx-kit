@@ -7,9 +7,10 @@ binding spec.
 Nothing here is blocking. In rough priority order:
 
 - **Spec §7 promises `FrameDecodeError` carries "the byte offset at which parsing
-  failed".** viem's `fromRlp` does not expose one, so the delivered offset is a constant
-  0 or 1. Either hand-roll an RLP walker or drop the promise from the spec — a misleading
-  offset is worse than none.
+  failed".** viem's `fromRlp` does not expose one, so the misleading constant offset 1 on
+  body decode and envelope length checks has been removed (leaving only the genuine byte 0
+  check for type prefix mismatch). A full byte-offset promise across all nested fields
+  remains open until an RLP walker is hand-rolled.
 - **The head reference price is a floor, not a budget.** `toHeadShape` rewrites a
   reference-carrying transaction into its EIP-8272 head equivalent, so the divergence
   survey prices one instead of refusing it. The synthetic VERIFY frame claims zero

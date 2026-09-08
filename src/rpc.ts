@@ -89,15 +89,15 @@ export type SimulateFrameTransactionResult = {
   executionError: string | null
 }
 
-function toMode(value: Hex): FrameMode {
-  const mode = Number(BigInt(value))
+function toMode(value: Hex, what: string = 'frame.mode'): FrameMode {
+  const mode = Number(asHexScalar(value, what))
   if (mode !== 0 && mode !== 1 && mode !== 2)
     throw new FrameDecodeError(`unsupported frame mode ${mode}`)
   return mode
 }
 
-function toScheme(value: Hex): SigScheme {
-  const scheme = Number(BigInt(value))
+function toScheme(value: Hex, what: string = 'signature.scheme'): SigScheme {
+  const scheme = Number(asHexScalar(value, what))
   if (scheme !== 0 && scheme !== 1 && scheme !== 2)
     throw new FrameDecodeError(`unsupported signature scheme ${scheme}`)
   return scheme
@@ -111,36 +111,43 @@ const STATUS: Record<number, FrameStatus> = {
 
 /** Parse the node's decoded JSON view. Oracle 2 diffs this against `decodeFrameTx`. */
 export function parseRpcFrameTransaction(json: RpcFrameTransaction): FrameTransaction {
-  const frames: Frame[] = json.frames.map((f) => ({
-    mode: toMode(f.mode),
-    flags: Number(BigInt(f.flags)),
-    target: f.to === null ? null : getAddress(f.to),
-    limits: { execution: BigInt(f.gasLimit), state: BigInt(f.stateLimit) },
-    value: BigInt(f.value),
+  const frames: Frame[] = json.frames.map((f, i) => ({
+    mode: toMode(f.mode, `frames[${i}].mode`),
+    flags: Number(asHexScalar(f.flags, `frames[${i}].flags`)),
+    target: asOptionalAddress(f.to, `frames[${i}].to`),
+    limits: {
+      execution: asHexScalar(f.gasLimit, `frames[${i}].gasLimit`),
+      state: asHexScalar(f.stateLimit, `frames[${i}].stateLimit`),
+    },
+    value: asHexScalar(f.value, `frames[${i}].value`),
     data: f.data,
   }))
 
-  const signatures: FrameSignature[] = json.signatures.map((s) => ({
-    scheme: toScheme(s.scheme),
-    signer: s.signer === null ? null : getAddress(s.signer),
+  const signatures: FrameSignature[] = json.signatures.map((s, i) => ({
+    scheme: toScheme(s.scheme, `signatures[${i}].scheme`),
+    signer: asOptionalAddress(s.signer, `signatures[${i}].signer`),
     msg: s.msg,
     signature: s.signature,
   }))
 
   const recentRootReferences: RecentRootReference[] = json.recentRootReferences.map(
-    (r) => ({ sourceId: r.sourceId, slot: BigInt(r.slot), root: r.root }),
+    (r, i) => ({
+      sourceId: r.sourceId,
+      slot: asHexScalar(r.slot, `recentRootReferences[${i}].slot`),
+      root: r.root,
+    }),
   )
 
   return {
-    chainId: BigInt(json.chainId),
-    nonceKeys: json.nonceKeys.map((k) => BigInt(k)),
-    nonceSeq: BigInt(json.nonceSeq),
-    sender: getAddress(json.sender),
+    chainId: asHexScalar(json.chainId, 'chainId'),
+    nonceKeys: json.nonceKeys.map((k, i) => asHexScalar(k, `nonceKeys[${i}]`)),
+    nonceSeq: asHexScalar(json.nonceSeq, 'nonceSeq'),
+    sender: asAddress(json.sender, 'sender'),
     frames,
     signatures,
-    maxPriorityFeePerGas: BigInt(json.maxPriorityFeePerGas),
-    maxFeePerGas: BigInt(json.maxFeePerGas),
-    maxFeePerBlobGas: BigInt(json.maxFeePerBlobGas),
+    maxPriorityFeePerGas: asHexScalar(json.maxPriorityFeePerGas, 'maxPriorityFeePerGas'),
+    maxFeePerGas: asHexScalar(json.maxFeePerGas, 'maxFeePerGas'),
+    maxFeePerBlobGas: asHexScalar(json.maxFeePerBlobGas, 'maxFeePerBlobGas'),
     blobVersionedHashes: [...json.blobVersionedHashes],
     recentRootReferences,
   }
@@ -155,16 +162,16 @@ export function parseRpcFrameTransaction(json: RpcFrameTransaction): FrameTransa
  */
 export function parseRpcFrameReceipt(json: RpcFrameReceiptJson): FrameReceipt {
   return {
-    payer: json.payer ? getAddress(json.payer) : null,
-    frameReceipts: (json.frameReceipts ?? []).map((f) => {
-      const code = Number(BigInt(f.status))
+    payer: asOptionalAddress(json.payer, 'payer'),
+    frameReceipts: (json.frameReceipts ?? []).map((f, i) => {
+      const code = Number(asHexScalar(f.status, `frameReceipts[${i}].status`))
       const status = STATUS[code]
       if (status === undefined)
         throw new FrameDecodeError(`unknown frame receipt status ${code}`)
       return {
         status,
-        gasUsed: BigInt(f.gasUsed),
-        stateGasUsed: BigInt(f.stateGasUsed),
+        gasUsed: asHexScalar(f.gasUsed, `frameReceipts[${i}].gasUsed`),
+        stateGasUsed: asHexScalar(f.stateGasUsed, `frameReceipts[${i}].stateGasUsed`),
         logs: [...f.logs],
       }
     }),
@@ -228,11 +235,11 @@ function asUnion<T extends string>(
 function asHexScalar(value: unknown, what: string): bigint {
   if (typeof value !== 'string')
     throw new FrameDecodeError(
-      `simulate result: ${what} must be a hex string, got ${JSON.stringify(value)}`,
+      `${what} must be a hex string, got ${JSON.stringify(value)}`,
     )
   if (!/^0x[0-9a-fA-F]+$/.test(value))
     throw new FrameDecodeError(
-      `simulate result: ${what} is not a hex quantity: ${JSON.stringify(value)}`,
+      `${what} is not a hex quantity: ${JSON.stringify(value)}`,
     )
   return BigInt(value)
 }
@@ -245,22 +252,25 @@ function asOptionalString(value: unknown, what: string): string | null {
   if (value === undefined || value === null) return null
   if (typeof value !== 'string')
     throw new FrameDecodeError(
-      `simulate result: ${what} must be a string, got ${JSON.stringify(value)}`,
+      `${what} must be a string, got ${JSON.stringify(value)}`,
     )
   return value
 }
 
-function asOptionalAddress(value: unknown, what: string): Address | null {
-  if (value === undefined || value === null) return null
+function asAddress(value: unknown, what: string): Address {
   if (typeof value !== 'string')
     throw new FrameDecodeError(
-      `simulate result: ${what} must be an address, got ${JSON.stringify(value)}`,
+      `${what} must be an address, got ${JSON.stringify(value)}`,
     )
   try {
     return getAddress(value)
   } catch {
-    throw new FrameDecodeError(`simulate result: ${what} is not an address: ${value}`)
+    throw new FrameDecodeError(`${what} is not an address: ${value}`)
   }
+}
+
+function asOptionalAddress(value: unknown, what: string): Address | null {
+  return value === undefined || value === null ? null : asAddress(value, what)
 }
 
 function asFrameResults(value: unknown): { gasUsed: bigint; succeeded: boolean }[] | null {
