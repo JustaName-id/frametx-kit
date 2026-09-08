@@ -70,6 +70,38 @@ export function assertCanonicalSignature(sig: FrameSignature, index: number): vo
     )
 }
 
+/**
+ * Rewrite a P256 signature to low-`s` form: `r || s || qx || qy` (128 bytes)
+ * with `s` replaced by `n - s` when `s > n/2`.
+ *
+ * ECDSA is malleable — `(r, s)` and `(r, n - s)` verify the same message against
+ * the same key — so this keeps the signature valid while satisfying the
+ * consensus rule that a frame's `s` be low. `P256VERIFY` itself accepts high
+ * `s`, and WebAuthn and passkey signers routinely emit it, so anything wiring
+ * one into a frame transaction needs this or the chain rejects the transaction.
+ *
+ * The embedded public key is untouched: `(r, n - s)` recovers against the same
+ * `(qx, qy)`. Structurally malformed input — wrong length, `r` or `s` outside
+ * `(0, n)` — throws rather than being silently repaired.
+ */
+export function normalizeP256Signature(signature: Hex, index = 0): Hex {
+  const len = signatureByteLength(signature, index)
+  if (len !== 128)
+    throw new FrameEncodeError(
+      `signature ${index}: p256 must be 128 bytes (r||s||qx||qy), got ${len}`,
+    )
+  const r = BigInt(sliceHex(signature, 0, 32))
+  const s = BigInt(sliceHex(signature, 32, 64))
+  if (r === 0n || r >= SECP256R1_N)
+    throw new FrameEncodeError(`signature ${index}: r must be in (0, n)`)
+  if (s === 0n || s >= SECP256R1_N)
+    throw new FrameEncodeError(`signature ${index}: s must be in (0, n)`)
+
+  const low = s > SECP256R1_N / 2n ? SECP256R1_N - s : s
+  const body = signature.slice(2)
+  return `0x${body.slice(0, 64)}${low.toString(16).padStart(64, '0')}${body.slice(128)}` as Hex
+}
+
 /** An empty `signer` resolves to `tx.sender`, including for EVM introspection. */
 export function resolveSigner(tx: FrameTransaction, index: number): Address {
   const sig = tx.signatures[index]
@@ -145,53 +177,89 @@ function bareRecoveryId(v: bigint, index: number): bigint {
 export type FrameAccount = {
   address: Address
   sign?: ((parameters: { hash: Hex }) => Promise<Hex>) | undefined
+  /**
+   * Sign a raw 32-byte digest with P256 / secp256r1, returning
+   * `r || s || qx || qy` (128 bytes) with any `s`. `signFrameTx` runs the
+   * result through `normalizeP256Signature`, so a WebAuthn or passkey signer
+   * that hands back high-`s` needs nothing extra.
+   *
+   * `signFrameTx` does not verify a P256 signature — scheme 2 has no address
+   * recovery — so the signer owns the correctness of `r`, `s` and the embedded
+   * public key; the library owns only the wire form.
+   */
+  signP256?: ((parameters: { hash: Hex }) => Promise<Hex>) | undefined
 }
 
 /**
- * Sign every empty-`msg` SECP256K1 entry over the transaction's sig-hash.
+ * Sign every empty-`msg` entry this account can sign, over the transaction's
+ * sig-hash: SECP256K1 entries with the account's `sign`, and — when the account
+ * carries a `signP256` — P256 entries too, normalized to low-`s`. An ARBITRARY
+ * entry, and a P256 entry with no `signP256` available, are left untouched.
  *
  * Takes either a raw private key or a `FrameAccount` — a hardware wallet, a
- * KMS, an HD account, anything that signs a digest for a known address.
+ * KMS, an HD account, a passkey wrapper, anything that signs a digest for a
+ * known address.
  *
- * Idempotent: the sig-hash elides empty-`msg` signature bytes, so re-signing an
- * already-signed transaction produces the same bytes.
+ * Idempotent for SECP256K1: the sig-hash elides empty-`msg` signature bytes, so
+ * re-signing produces the same bytes. A P256 signer that is itself
+ * nondeterministic is re-invoked on every call.
  */
 export async function signFrameTx(
   tx: FrameTransaction,
   signer: Hex | FrameAccount,
 ): Promise<FrameTransaction> {
-  const account = typeof signer === 'string' ? privateKeyToAccount(signer) : signer
-  if (typeof account.sign !== 'function')
-    throw new FrameEncodeError(
-      `account ${account.address} cannot sign a raw 32-byte digest: it has no ` +
-        `\`sign\` method. A JSON-RPC account cannot sign one at all, and ` +
-        `\`signMessage\` is not a substitute — it EIP-191-prefixes its argument.`,
-    )
+  const account: FrameAccount =
+    typeof signer === 'string' ? privateKeyToAccount(signer) : signer
   const sign = account.sign
+  const signP256 = account.signP256
+  if (typeof sign !== 'function' && typeof signP256 !== 'function')
+    throw new FrameEncodeError(
+      `account ${account.address} cannot sign a raw 32-byte digest: it has ` +
+        `neither a \`sign\` nor a \`signP256\` method. A JSON-RPC account cannot ` +
+        `sign one at all, and \`signMessage\` is not a substitute — it ` +
+        `EIP-191-prefixes its argument.`,
+    )
   const digest = frameTxSigHash(tx)
 
   const signatures = await Promise.all(
     tx.signatures.map(async (sig, i) => {
-      if (sig.scheme !== 1 || sig.msg !== '0x') return sig
+      if (sig.msg !== '0x') return sig
+      if (sig.scheme !== 1 && sig.scheme !== 2) return sig
 
-      // An entry names its own signer (or, if empty, resolves to tx.sender). Signing
-      // it with this key when that resolved signer is some OTHER address would
-      // produce a signature that recovers to the wrong address — a transaction the
-      // chain rejects at consensus, with no error from this library unless we check.
+      // An entry names its own signer (or, if empty, resolves to tx.sender).
+      // Signing it for a different address produces a signature that fails
+      // authentication at consensus with no local error, so it is refused here.
       const resolvedSigner = sig.signer ?? tx.sender
-      if (!sameAddress(resolvedSigner, account.address))
-        throw new FrameEncodeError(
-          `signature ${i}: resolved signer ${resolvedSigner} does not match ` +
-            `the signing account ${account.address}`,
-        )
+      const assertResolvedSigner = () => {
+        if (!sameAddress(resolvedSigner, account.address))
+          throw new FrameEncodeError(
+            `signature ${i}: resolved signer ${resolvedSigner} does not match ` +
+              `the signing account ${account.address}`,
+          )
+      }
 
-      const flat = await sign({ hash: digest })
-      // viem returns r||s||v with v in {27,28}; the frame layout is v||r||s with a bare id.
-      const r = sliceHex(flat, 0, 32)
-      const s = sliceHex(flat, 32, 64)
-      const v = bareRecoveryId(BigInt(sliceHex(flat, 64, 65)), i)
-      const signature = `0x${v.toString(16).padStart(2, '0')}${r.slice(2)}${s.slice(2)}` as Hex
-      return { ...sig, signature }
+      if (sig.scheme === 1) {
+        if (typeof sign !== 'function')
+          throw new FrameEncodeError(
+            `signature ${i}: a SECP256K1 entry needs a \`sign\` method; this ` +
+              `account only signs P256.`,
+          )
+        assertResolvedSigner()
+        const flat = await sign({ hash: digest })
+        // viem returns r||s||v with v in {27,28}; the frame layout is v||r||s with a bare id.
+        const r = sliceHex(flat, 0, 32)
+        const s = sliceHex(flat, 32, 64)
+        const v = bareRecoveryId(BigInt(sliceHex(flat, 64, 65)), i)
+        const signature = `0x${v.toString(16).padStart(2, '0')}${r.slice(2)}${s.slice(2)}` as Hex
+        return { ...sig, signature }
+      }
+
+      // scheme 2 — P256. Left to the caller when no P256 signer is available,
+      // the same as an ARBITRARY entry.
+      if (typeof signP256 !== 'function') return sig
+      assertResolvedSigner()
+      const raw = await signP256({ hash: digest })
+      return { ...sig, signature: normalizeP256Signature(raw, i) }
     }),
   )
 

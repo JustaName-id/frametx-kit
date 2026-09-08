@@ -6,6 +6,7 @@ import {
   SECP256R1_N,
   assertCanonicalSignature,
   assertValidFrameTx,
+  normalizeP256Signature,
   recoverFrameSigner,
   resolveSigner,
   signFrameTx,
@@ -80,6 +81,14 @@ describe('assertCanonicalSignature', () => {
   })
 })
 
+// r||s||qx||qy: 64 hex chars each for r and s, then a 64-byte tail. The `…00`
+// tail is for the canonical-rule checks (they ignore it); `…ab` (`P256_QXQY`)
+// is for `normalizeP256Signature`, which must carry it through a flip untouched.
+const hex32 = (v: bigint): string => v.toString(16).padStart(64, '0')
+const P256_QXQY = 'ab'.repeat(64)
+const p256Raw = (r: bigint, s: bigint): Hex =>
+  `0x${hex32(r)}${hex32(s)}${P256_QXQY}` as Hex
+
 // P256 (scheme 2) — DESIGN.md §3: `signature = r||s||qx||qy`, 128 bytes,
 // `0 < r < SECP256R1N`, `0 < s <= SECP256R1N/2`. `P256VERIFY` accepts high s, so
 // the signer must normalize before use. The bounds below are expressed in terms
@@ -87,7 +96,6 @@ describe('assertCanonicalSignature', () => {
 // literal typed from the standard. No captured fixture uses scheme 2, so this
 // path was previously exercised only by a single wrong-length negative.
 describe('assertCanonicalSignature: P256 canonical rules', () => {
-  const hex32 = (v: bigint): string => v.toString(16).padStart(64, '0')
   const p256 = (r: bigint, s: bigint) => ({
     scheme: 2 as const,
     signer: null,
@@ -123,6 +131,52 @@ describe('assertCanonicalSignature: P256 canonical rules', () => {
     expect(() =>
       assertCanonicalSignature(p256(1n, SECP256R1_N / 2n + 1n), 0),
     ).toThrow(/normalize to n - s/)
+  })
+})
+
+describe('normalizeP256Signature', () => {
+  test('leaves a low-s signature untouched, byte for byte', () => {
+    expect(normalizeP256Signature(p256Raw(7n, 9n))).toBe(p256Raw(7n, 9n))
+  })
+
+  test('rewrites a high s to n - s and leaves r and the key alone', () => {
+    expect(normalizeP256Signature(p256Raw(7n, SECP256R1_N - 9n))).toBe(p256Raw(7n, 9n))
+  })
+
+  test('the n/2 boundary is low, n/2 + 1 folds back to n/2', () => {
+    expect(normalizeP256Signature(p256Raw(7n, SECP256R1_N / 2n))).toBe(
+      p256Raw(7n, SECP256R1_N / 2n),
+    )
+    // n odd => n - (n/2 + 1) === n/2 in integer division
+    expect(normalizeP256Signature(p256Raw(7n, SECP256R1_N / 2n + 1n))).toBe(
+      p256Raw(7n, SECP256R1_N / 2n),
+    )
+  })
+
+  test('the normalized result passes the P256 canonical check', () => {
+    const normalized = normalizeP256Signature(p256Raw(7n, SECP256R1_N - 9n))
+    expect(() =>
+      assertCanonicalSignature(
+        { scheme: 2 as const, signer: null, msg: '0x' as const, signature: normalized },
+        0,
+      ),
+    ).not.toThrow()
+  })
+
+  test('the embedded public key survives a flip', () => {
+    const out = normalizeP256Signature(p256Raw(7n, SECP256R1_N - 9n))
+    expect(out.slice(2).slice(128)).toBe(P256_QXQY)
+  })
+
+  test('rejects a signature that is not 128 bytes', () => {
+    expect(() => normalizeP256Signature('0x1234')).toThrow(/128 bytes/)
+  })
+
+  test('rejects r or s outside (0, n) rather than repairing it', () => {
+    expect(() => normalizeP256Signature(p256Raw(0n, 9n))).toThrow(/r must be in \(0, n\)/)
+    expect(() => normalizeP256Signature(p256Raw(SECP256R1_N, 9n))).toThrow(/r must be in/)
+    expect(() => normalizeP256Signature(p256Raw(7n, 0n))).toThrow(/s must be in \(0, n\)/)
+    expect(() => normalizeP256Signature(p256Raw(7n, SECP256R1_N))).toThrow(/s must be in/)
   })
 })
 
@@ -461,5 +515,107 @@ describe('signFrameTx recovery-id normalization', () => {
     await expect(
       signFrameTx(tx, signerReturning(inner.address, '25', flat)),
     ).rejects.toThrow(/signer returned v=37/)
+  })
+})
+
+// A P256 signer hands back r||s||qx||qy for a digest. The library never verifies
+// scheme 2 (no address recovery), so a structurally valid, cryptographically
+// arbitrary signature is the right thing to test with — the same way the P256
+// canonical-rule tests do. What `signFrameTx` owns is the wire form: it fills the
+// entry and normalizes s to low.
+describe('signFrameTx with a P256 signer', () => {
+  const ADDR = GOLDEN_TX.sender
+  const p256Account = (signature: Hex) => ({
+    address: ADDR,
+    signP256: async () => signature,
+  })
+  const p256Entry = {
+    scheme: 2 as const,
+    signer: null,
+    msg: '0x' as const,
+    signature: '0x' as const,
+  }
+  const oneP256 = { ...GOLDEN_TX, sender: ADDR, signatures: [p256Entry] }
+
+  test('fills a scheme-2 empty-msg entry and normalizes s to the low half', async () => {
+    const signed = await signFrameTx(oneP256, p256Account(p256Raw(7n, SECP256R1_N - 9n)))
+    expect(signed.signatures[0]!.signature).toBe(p256Raw(7n, 9n))
+    expect(() => assertValidFrameTx(signed)).not.toThrow()
+  })
+
+  test('a P256-only account — no `sign` — signs a P256 transaction', async () => {
+    const signed = await signFrameTx(oneP256, p256Account(p256Raw(7n, 9n)))
+    expect(signed.signatures[0]!.signature).toBe(p256Raw(7n, 9n))
+  })
+
+  test('refuses when the entry resolves to a different signer', async () => {
+    const other = privateKeyToAccount(`0x${'44'.repeat(32)}` as const).address
+    const tx = { ...oneP256, signatures: [{ ...p256Entry, signer: other }] }
+    await expect(
+      signFrameTx(tx, p256Account(p256Raw(7n, 9n))),
+    ).rejects.toThrow(/does not match the signing account/)
+  })
+
+  test('a P256-only account refuses a SECP256K1 entry rather than skipping it', async () => {
+    const tx = {
+      ...GOLDEN_TX,
+      sender: ADDR,
+      signatures: [
+        { scheme: 1 as const, signer: null, msg: '0x' as const, signature: '0x' as const },
+      ],
+    }
+    await expect(
+      signFrameTx(tx, p256Account(p256Raw(7n, 9n))),
+    ).rejects.toThrow(/a SECP256K1 entry needs a/)
+  })
+
+  test('an account with neither `sign` nor `signP256` is refused', async () => {
+    await expect(signFrameTx(oneP256, { address: ADDR })).rejects.toThrow(
+      /cannot sign a raw 32-byte digest/,
+    )
+  })
+
+  test('leaves an explicit-msg P256 entry untouched', async () => {
+    const explicit = {
+      scheme: 2 as const,
+      signer: ADDR,
+      msg: `0x${'ab'.repeat(32)}` as const,
+      signature: p256Raw(7n, 9n),
+    }
+    const tx = { ...oneP256, signatures: [explicit] }
+    const signed = await signFrameTx(tx, p256Account(p256Raw(1n, 1n)))
+    expect(signed.signatures[0]).toEqual(explicit)
+  })
+
+  test('leaves a P256 entry untouched when the account has no `signP256`', async () => {
+    const account = privateKeyToAccount(PRIVATE_KEY)
+    const tx = {
+      ...GOLDEN_TX,
+      sender: account.address,
+      signatures: [{ ...p256Entry, signature: p256Raw(7n, 9n) }],
+    }
+    const signed = await signFrameTx(tx, account)
+    expect(signed.signatures[0]!.signature).toBe(p256Raw(7n, 9n))
+  })
+
+  test('signs a SECP256K1 and a P256 entry in one pass', async () => {
+    const inner = privateKeyToAccount(PRIVATE_KEY)
+    const account = {
+      address: inner.address,
+      sign: ({ hash }: { hash: Hex }) => inner.sign({ hash }),
+      signP256: async () => p256Raw(7n, SECP256R1_N - 9n),
+    }
+    const tx = {
+      ...GOLDEN_TX,
+      sender: inner.address,
+      signatures: [
+        { scheme: 1 as const, signer: null, msg: '0x' as const, signature: '0x' as const },
+        { scheme: 2 as const, signer: null, msg: '0x' as const, signature: '0x' as const },
+      ],
+    }
+    const signed = await signFrameTx(tx, account)
+    expect(await recoverFrameSigner(signed, 0)).toBe(inner.address)
+    expect(signed.signatures[1]!.signature).toBe(p256Raw(7n, 9n))
+    expect(() => assertValidFrameTx(signed)).not.toThrow()
   })
 })

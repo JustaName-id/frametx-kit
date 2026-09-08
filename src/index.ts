@@ -19,6 +19,7 @@ export {
   type FrameAccount,
   assertCanonicalSignature,
   assertValidFrameTx,
+  normalizeP256Signature,
   recoverFrameSigner,
   resolveSigner,
   signFrameTx,

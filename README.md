@@ -45,10 +45,10 @@ const raw = encodeFrameTx(signed)
 ```
 
 `signFrameTx` also takes an account instead of a key — anything with an `address` and a
-raw-digest `sign`, which covers viem's `privateKeyToAccount` and `mnemonicToAccount`, a
-`toAccount` source, and your own wrapper around a hardware wallet, an HSM or a remote
-signer. It signs every SECP256K1 entry whose `msg` is empty, and refuses if the entry's
-resolved signer is not that account's address.
+raw-digest `sign` (or `signP256`), which covers viem's `privateKeyToAccount` and
+`mnemonicToAccount`, a `toAccount` source, and your own wrapper around a hardware wallet,
+an HSM, a passkey or a remote signer. It signs every SECP256K1 entry whose `msg` is
+empty, and refuses if the entry's resolved signer is not that account's address.
 
 ```ts
 import { privateKeyToAccount } from 'viem/accounts'
@@ -67,9 +67,23 @@ argument, so the signature recovers to nothing. A `JsonRpcAccount` (a browser wa
 cannot sign a raw digest at all — both are refused with an error rather than producing a
 transaction the chain silently rejects.
 
-P256 and ARBITRARY entries are left untouched; build those signatures yourself and let
-`assertValidFrameTx` check them. `signFrameTx` also handles one signer at a time, so a
-transaction with entries for two different signers needs the bytes assembled by hand.
+A **P256** entry is signed when the account carries a `signP256` — a raw-digest signer
+returning `r || s || qx || qy` (128 bytes, any `s`). `signFrameTx` normalizes `s` to the
+low half (`n − s`), which WebAuthn and passkey signers need, but does not verify the
+result: scheme 2 has no address recovery, so the signer owns `r`, `s` and the embedded
+key. Without a `signP256`, a P256 entry is left untouched.
+
+```ts
+const signed = await signFrameTx(tx, {
+  address: '0x…',
+  signP256: ({ hash }) => myPasskey.sign(hash), // r||s||qx||qy, s may be high
+})
+```
+
+`normalizeP256Signature(sig)` is exported for building the bytes by hand. An **ARBITRARY**
+entry is always left untouched — build it yourself and let `assertValidFrameTx` check it.
+`signFrameTx` handles one signer at a time, so a transaction with entries for two
+different signers needs the bytes assembled by hand.
 
 ## Two things that will bite you
 
