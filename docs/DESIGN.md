@@ -1,7 +1,7 @@
 # frametx-kit — design
 
 **Date:** 2026-09-06
-**Status:** implemented; binding on the code in this repository. Reviewed against ethrex `hegota-testnet` @ `19c065fa8` and the live node on 2026-09-06; §5, §6 and §9 amended for the RPC surface actually served (no raw transaction bytes). §5, §7 and §8 amended 2026-09-07 to match the module graph, strict-decode surface and entry-point name as built.
+**Status:** implemented; binding on the code in this repository. Reviewed against ethrex `hegota-testnet` @ `19c065fa8` and the live node on 2026-09-06; §5, §6 and §9 amended for the RPC surface actually served (no raw transaction bytes). §5, §7 and §8 amended 2026-09-07 to match the module graph, strict-decode surface and entry-point name as built. §7 amended 2026-09-08: the byte-offset promise is delivered by a hand-rolled `walkRlp`, not deferred.
 **Target network:** hegota-testnet, chain ID `8141`, genesis `0x7ca0f735…cd0f2332`
 **Reference client:** [`lambdaclass/ethrex`, branch `hegota-testnet`](https://github.com/lambdaclass/ethrex/tree/hegota-testnet). Every `.rs`, `.py` and `docs/*.md` path cited below is a path in that repository, not in this one.
 
@@ -293,8 +293,8 @@ Ten source files in dependency order. Nothing depends on anything above it.
 |---|---|---|
 | `types` | The `FrameTransaction` shape and the `RuleSet` union. | viem types only |
 | `errors` | Typed error classes with stable `name`s. | — |
-| `rlp` | `rlpUint`, `parseRlpUint`, `byteLength`: minimal-scalar rules viem does not enforce. | `errors` |
-| `envelope` | `encodeFrameTx`, `decodeFrameTx`, `validateFrameTx`. Pure, no IO. | `rlp`, `errors`, `types`, viem `toRlp`/`fromRlp` |
+| `rlp` | `rlpUint`, `parseRlpUint`, `byteLength`: minimal-scalar rules viem does not enforce; `walkRlp`, an offset-tracking RLP reader that rejects the non-canonical encodings `fromRlp` accepts. | `errors` |
+| `envelope` | `encodeFrameTx`, `decodeFrameTx`, `validateFrameTx`. Pure, no IO. | `rlp`, `errors`, `types`, viem `toRlp` |
 | `sighash` | The elision rule plus keccak256. | `envelope` |
 | `signatures` | Canonical rules, signer recovery, empty-signer resolution, signing (private key or external account), `assertValidFrameTx`. | `sighash`, `envelope` |
 | `gas` | The whole of §4, parameterized by rule set. Pure, no IO. | `rlp`, `errors`, `types` only |
@@ -408,12 +408,19 @@ Violations throw a typed error before any bytes are produced.
 wrong, and surface them as findings rather than throwing — a surveyor that dies on one odd
 transaction cannot survey. Strict decode is not a flag: it is `decodeFrameTx(raw)` followed by
 `assertValidFrameTx(tx)`, so the strict rules live in one place instead of two. Malformed RLP
-produces a typed error; the byte-offset promise is tracked in `OPEN-ITEMS.md`, since viem's
-`fromRlp` exposes none. Decode does reject **non-canonical RLP** — a long-form encoding of a
-single-byte scalar, say — because ethrex rejects those bytes at RLP decode and viem's `fromRlp`
+produces a typed error carrying **the byte offset at which parsing failed**: `decodeFrameTx`
+walks the body with `walkRlp` (in `rlp.ts`), a small offset-tracking RLP reader, rather than
+viem's `fromRlp`, which exposes no offset. The offset is into the full transaction, counting
+the `0x06` type byte as byte 0, so it indexes straight into the hex the caller passed.
+`walkRlp` also rejects **non-canonical RLP** — a long-form encoding of a single-byte scalar,
+say — at the offending byte, because ethrex rejects those bytes at RLP decode while `fromRlp`
 silently canonicalizes them; that is a well-formedness rule about the bytes, not a structural
 rule about the transaction, so it does not make decode any less lenient about the shapes the
-chain actually accepted.
+chain actually accepted. It also keeps the two guards `fromRlp` applied and a bare
+`hexToBytes` does not: a non-byte-aligned string is rejected rather than nibble-padded, and
+nesting is capped at 1024 so pathological input throws a typed error instead of exhausting
+the stack. A re-encoding is still compared against the input as a cheap independent
+backstop; that comparison carries no offset, since a mismatch could be anywhere.
 
 Every error is a typed class with a stable `name`, following viem's error conventions so the
 extension surface composes with viem's own error handling.
