@@ -240,11 +240,11 @@ export function decodeFrameTx(raw: Hex): FrameTransaction {
   // Backstop: `walkRlp` already rejects a long-form scalar and a non-minimal
   // length prefix at their offset, so this only fires for a canonicality bug the
   // walker misses — an independent check kept because it is cheap and holds for
-  // every transaction the chain actually accepted.
+  // every transaction the chain actually accepted. No offset: the mismatch could
+  // be anywhere in the body, and a wrong offset is worse than none.
   if (encodeFrameTx(tx).toLowerCase() !== raw.toLowerCase())
     throw new FrameDecodeError(
       're-encoding does not reproduce the input bytes: non-canonical RLP, which ethrex rejects at decode',
-      TYPE_PREFIX_BYTES,
     )
 
   return tx

@@ -58,6 +58,14 @@ function beToNumber(bytes: Uint8Array): number {
 }
 
 /**
+ * Matches the `rlpDepthLimit` viem's `fromRlp` enforced (1024). A frame
+ * transaction nests about four lists deep, so this only ever fires on
+ * pathological input — where it turns a `RangeError` from stack exhaustion into
+ * a typed `FrameRlpError` the caller can catch.
+ */
+const MAX_RLP_DEPTH = 1024
+
+/**
  * Parse one complete RLP item and require it to consume the whole input.
  *
  * Written by hand rather than delegating to viem's `fromRlp` for two reasons the
@@ -72,13 +80,18 @@ function beToNumber(bytes: Uint8Array): number {
  * fact about what a field means and not about whether the bytes are well formed.
  */
 export function walkRlp(value: Hex, base = 0): RlpNode {
+  // viem's `hexToBytes` does not reject a non-byte-aligned string — it prepends
+  // a zero nibble, which shifts every byte and so every offset this reader would
+  // report. `fromRlp` rejected it; keep rejecting it.
+  if (value.length % 2 !== 0)
+    throw new FrameRlpError(`hex string is not byte-aligned: ${value}`, base)
   let bytes: Uint8Array
   try {
     bytes = hexToBytes(value)
   } catch (cause) {
     throw new FrameRlpError(`not a hex string: ${(cause as Error).message}`, base)
   }
-  const node = readItem(bytes, 0, base)
+  const node = readItem(bytes, 0, base, 0)
   if (node.end - base !== bytes.length)
     throw new FrameRlpError(
       `${bytes.length - (node.end - base)} trailing byte(s) after the RLP item`,
@@ -87,8 +100,10 @@ export function walkRlp(value: Hex, base = 0): RlpNode {
   return node
 }
 
-function readItem(bytes: Uint8Array, pos: number, base: number): RlpNode {
+function readItem(bytes: Uint8Array, pos: number, base: number, depth: number): RlpNode {
   const at = pos + base
+  if (depth > MAX_RLP_DEPTH)
+    throw new FrameRlpError(`RLP nested deeper than ${MAX_RLP_DEPTH}`, at)
   if (pos >= bytes.length)
     throw new FrameRlpError(`truncated RLP: expected an item`, at)
   const prefix = bytes[pos]!
@@ -129,12 +144,12 @@ function readItem(bytes: Uint8Array, pos: number, base: number): RlpNode {
   }
 
   // Short list.
-  if (prefix <= 0xf7) return readList(bytes, pos, pos + 1, prefix - 0xc0, base)
+  if (prefix <= 0xf7) return readList(bytes, pos, pos + 1, prefix - 0xc0, base, depth)
 
   // Long list.
   const lenOfLen = prefix - 0xf7
   const { len, dataStart } = readLongLength(bytes, pos, lenOfLen, base, 'list')
-  return readList(bytes, pos, dataStart, len, base)
+  return readList(bytes, pos, dataStart, len, base, depth)
 }
 
 function readLongLength(
@@ -165,6 +180,7 @@ function readList(
   payloadStart: number,
   payloadLen: number,
   base: number,
+  depth: number,
 ): RlpNode {
   const at = pos + base
   const payloadEnd = payloadStart + payloadLen
@@ -176,7 +192,7 @@ function readList(
   const items: RlpNode[] = []
   let cursor = payloadStart
   while (cursor < payloadEnd) {
-    const item = readItem(bytes, cursor, base)
+    const item = readItem(bytes, cursor, base, depth + 1)
     if (item.end - base > payloadEnd)
       throw new FrameRlpError(
         `RLP item overruns its parent list, whose payload ends at byte ${payloadEnd + base}`,

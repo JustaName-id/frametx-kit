@@ -74,6 +74,26 @@ describe('decodeFrameTx: FrameDecodeError.offset', () => {
   })
 })
 
+// Both cases `fromRlp` used to reject and this reader has to keep rejecting:
+// they stay typed `FrameDecodeError` rather than escaping as an odd-length hex
+// error or a RangeError.
+describe('decodeFrameTx: malformed bodies stay typed', () => {
+  test('an odd-length body is a byte-alignment error, not a shifted parse', () => {
+    expect(() => decodeFrameTx(GOLDEN_RLP.slice(0, -1) as `0x${string}`)).toThrow(
+      FrameDecodeError,
+    )
+    expect(() => decodeFrameTx(GOLDEN_RLP.slice(0, -1) as `0x${string}`)).toThrow(
+      /byte-aligned/,
+    )
+  })
+
+  test('a pathologically nested body throws FrameDecodeError, not a RangeError', () => {
+    const deep = `0x06${'c1'.repeat(2000)}80` as const
+    expect(() => decodeFrameTx(deep)).toThrow(FrameDecodeError)
+    expect(() => decodeFrameTx(deep)).toThrow(/nested deeper/)
+  })
+})
+
 describe('decodeFrameTx: non-canonical RLP', () => {
   // `nonceSeq` is 7, canonically the single byte 0x07. Written long-form as
   // 0x81 0x07 it is one byte longer, so the outer list header grows from

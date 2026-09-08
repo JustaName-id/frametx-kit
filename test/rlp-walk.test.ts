@@ -98,3 +98,20 @@ describe('walkRlp: non-canonical input is rejected the way ethrex rejects it', (
     expect(() => walkRlp('0xf80100')).toThrow(/must use the short form/)
   })
 })
+
+describe('walkRlp: the guards fromRlp was providing', () => {
+  test('non-byte-aligned input is rejected, not nibble-padded', () => {
+    // viem's hexToBytes would parse this as `08 21 12`; the leading nibble shift
+    // moves every byte and so every offset this reader reports.
+    expect(() => walkRlp('0x82112')).toThrow(/byte-aligned/)
+    expect(() => walkRlp('0x82112')).toThrow(FrameRlpError)
+  })
+
+  test('pathological nesting throws a typed error, not a RangeError', () => {
+    // ~2000 nested single-element lists: deep enough to blow the stack in the
+    // raw recursion, so the depth cap has to fire first.
+    const deep = `0x${'c1'.repeat(2000)}80` as const
+    expect(() => walkRlp(deep)).toThrow(FrameRlpError)
+    expect(() => walkRlp(deep)).toThrow(/nested deeper than 1024/)
+  })
+})

@@ -294,7 +294,7 @@ Ten source files in dependency order. Nothing depends on anything above it.
 | `types` | The `FrameTransaction` shape and the `RuleSet` union. | viem types only |
 | `errors` | Typed error classes with stable `name`s. | — |
 | `rlp` | `rlpUint`, `parseRlpUint`, `byteLength`: minimal-scalar rules viem does not enforce; `walkRlp`, an offset-tracking RLP reader that rejects the non-canonical encodings `fromRlp` accepts. | `errors` |
-| `envelope` | `encodeFrameTx`, `decodeFrameTx`, `validateFrameTx`. Pure, no IO. | `rlp`, `errors`, `types`, viem `toRlp`/`fromRlp` |
+| `envelope` | `encodeFrameTx`, `decodeFrameTx`, `validateFrameTx`. Pure, no IO. | `rlp`, `errors`, `types`, viem `toRlp` |
 | `sighash` | The elision rule plus keccak256. | `envelope` |
 | `signatures` | Canonical rules, signer recovery, empty-signer resolution, signing (private key or external account), `assertValidFrameTx`. | `sighash`, `envelope` |
 | `gas` | The whole of §4, parameterized by rule set. Pure, no IO. | `rlp`, `errors`, `types` only |
@@ -416,8 +416,11 @@ the `0x06` type byte as byte 0, so it indexes straight into the hex the caller p
 say — at the offending byte, because ethrex rejects those bytes at RLP decode while `fromRlp`
 silently canonicalizes them; that is a well-formedness rule about the bytes, not a structural
 rule about the transaction, so it does not make decode any less lenient about the shapes the
-chain actually accepted. A re-encoding is still compared against the input as a cheap
-independent backstop.
+chain actually accepted. It also keeps the two guards `fromRlp` applied and a bare
+`hexToBytes` does not: a non-byte-aligned string is rejected rather than nibble-padded, and
+nesting is capped at 1024 so pathological input throws a typed error instead of exhausting
+the stack. A re-encoding is still compared against the input as a cheap independent
+backstop; that comparison carries no offset, since a mismatch could be anywhere.
 
 Every error is a typed class with a stable `name`, following viem's error conventions so the
 extension surface composes with viem's own error handling.
