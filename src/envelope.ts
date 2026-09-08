@@ -1,4 +1,4 @@
-import { type Hex, concatHex, toRlp, fromRlp, getAddress, type Address } from 'viem'
+import { type Hex, concatHex, toRlp, getAddress, type Address } from 'viem'
 import type {
   Frame,
   FrameSignature,
@@ -8,8 +8,11 @@ import type {
   FrameMode,
   SigScheme,
 } from './types.js'
-import { rlpUint, byteLength, parseRlpUint } from './rlp.js'
+import { type RlpNode, rlpUint, byteLength, parseRlpUint, walkRlp } from './rlp.js'
 import { FrameDecodeError, FrameEncodeError, FrameRlpError } from './errors.js'
+
+/** Byte 0 of a frame transaction is the `0x06` type prefix; the RLP body starts at 1. */
+const TYPE_PREFIX_BYTES = 1
 
 type RlpTree = Hex | RlpTree[]
 
@@ -59,59 +62,79 @@ export function encodeFrameTx(tx: FrameTransaction): Hex {
   return concatHex(['0x06', encodeFrameTxBody(tx)])
 }
 
-function asList(node: RlpTree, what: string): RlpTree[] {
-  if (!Array.isArray(node)) throw new FrameDecodeError(`${what} must be an RLP list`)
-  return node
+function asList(node: RlpNode, what: string): readonly RlpNode[] {
+  if (node.kind !== 'list')
+    throw new FrameDecodeError(`${what} must be an RLP list`, node.start)
+  return node.items
 }
 
-function asHex(node: RlpTree, what: string): Hex {
-  if (Array.isArray(node)) throw new FrameDecodeError(`${what} must be an RLP string`)
-  return node
+function asHex(node: RlpNode, what: string): Hex {
+  if (node.kind !== 'string')
+    throw new FrameDecodeError(`${what} must be an RLP string`, node.start)
+  return node.value
 }
 
-function asAddressOrNull(node: RlpTree, what: string): Address | null {
-  const hex = asHex(node, what)
-  if (hex === '0x') return null
-  if (byteLength(hex) !== 20)
-    throw new FrameDecodeError(`${what} must be 20 bytes, got ${byteLength(hex)}`)
-  return getAddress(hex)
-}
-
-function decodeLimits(node: RlpTree): FrameLimits {
-  const parts = asList(node, 'frame.limits')
-  if (parts.length !== 2)
-    throw new FrameDecodeError(`frame.limits must have 2 fields, got ${parts.length}`)
-  return {
-    execution: parseRlpUint(asHex(parts[0]!, 'limits.execution')),
-    state: parseRlpUint(asHex(parts[1]!, 'limits.state')),
+/**
+ * Read a scalar field as a bigint, turning `parseRlpUint`'s well-formedness
+ * complaints (odd-length hex, a non-minimal leading zero byte) into a
+ * `FrameDecodeError` that points at the field.
+ */
+function asUint(node: RlpNode, what: string): bigint {
+  try {
+    return parseRlpUint(asHex(node, what))
+  } catch (err) {
+    if (err instanceof FrameRlpError)
+      throw new FrameDecodeError(`${what}: ${err.message}`, node.start)
+    throw err
   }
 }
 
-function decodeFrame(node: RlpTree): Frame {
+function asAddressOrNull(node: RlpNode, what: string): Address | null {
+  const hex = asHex(node, what)
+  if (hex === '0x') return null
+  if (byteLength(hex) !== 20)
+    throw new FrameDecodeError(`${what} must be 20 bytes, got ${byteLength(hex)}`, node.start)
+  return getAddress(hex)
+}
+
+function decodeLimits(node: RlpNode): FrameLimits {
+  const parts = asList(node, 'frame.limits')
+  if (parts.length !== 2)
+    throw new FrameDecodeError(
+      `frame.limits must have 2 fields, got ${parts.length}`,
+      node.start,
+    )
+  return {
+    execution: asUint(parts[0]!, 'limits.execution'),
+    state: asUint(parts[1]!, 'limits.state'),
+  }
+}
+
+function decodeFrame(node: RlpNode): Frame {
   const f = asList(node, 'frame')
   if (f.length !== 6)
-    throw new FrameDecodeError(`frame must have 6 fields, got ${f.length}`)
-  const mode = Number(parseRlpUint(asHex(f[0]!, 'frame.mode')))
-  const flags = Number(parseRlpUint(asHex(f[1]!, 'frame.flags')))
+    throw new FrameDecodeError(`frame must have 6 fields, got ${f.length}`, node.start)
+  const mode = Number(asUint(f[0]!, 'frame.mode'))
+  const flags = Number(asUint(f[1]!, 'frame.flags'))
   if (mode !== 0 && mode !== 1 && mode !== 2)
-    throw new FrameDecodeError(`unsupported frame mode ${mode}`)
+    throw new FrameDecodeError(`unsupported frame mode ${mode}`, f[0]!.start)
   return {
     mode: mode as FrameMode,
     flags,
     target: asAddressOrNull(f[2]!, 'frame.target'),
     limits: decodeLimits(f[3]!),
-    value: parseRlpUint(asHex(f[4]!, 'frame.value')),
+    value: asUint(f[4]!, 'frame.value'),
     data: asHex(f[5]!, 'frame.data'),
   }
 }
 
-function decodeSignature(node: RlpTree): FrameSignature {
+function decodeSignature(node: RlpNode): FrameSignature {
   const s = asList(node, 'signature')
   if (s.length !== 4)
-    throw new FrameDecodeError(`signature must have 4 fields, got ${s.length}`)
-  const scheme = Number(parseRlpUint(asHex(s[0]!, 'signature.scheme')))
+    throw new FrameDecodeError(`signature must have 4 fields, got ${s.length}`, node.start)
+  const scheme = Number(asUint(s[0]!, 'signature.scheme'))
   if (scheme !== 0 && scheme !== 1 && scheme !== 2)
-    throw new FrameDecodeError(`unsupported signature scheme ${scheme}`)
+    throw new FrameDecodeError(`unsupported signature scheme ${scheme}`, s[0]!.start)
   return {
     scheme: scheme as SigScheme,
     signer: asAddressOrNull(s[1]!, 'signature.signer'),
@@ -120,32 +143,35 @@ function decodeSignature(node: RlpTree): FrameSignature {
   }
 }
 
-function decodeRecentRootReference(node: RlpTree): RecentRootReference {
+function decodeRecentRootReference(node: RlpNode): RecentRootReference {
   const r = asList(node, 'recentRootReference')
   if (r.length !== 3)
     throw new FrameDecodeError(
       `recentRootReference must have 3 fields, got ${r.length}`,
+      node.start,
     )
   return {
     sourceId: asHex(r[0]!, 'recentRootReference.sourceId'),
-    slot: parseRlpUint(asHex(r[1]!, 'recentRootReference.slot')),
+    slot: asUint(r[1]!, 'recentRootReference.slot'),
     root: asHex(r[2]!, 'recentRootReference.root'),
   }
 }
 
-function decodeFields(fields: RlpTree[], fees: RlpTree[], sender: Address): FrameTransaction {
+function decodeFields(
+  fields: readonly RlpNode[],
+  fees: readonly RlpNode[],
+  sender: Address,
+): FrameTransaction {
   return {
-    chainId: parseRlpUint(asHex(fields[0]!, 'chainId')),
-    nonceKeys: asList(fields[1]!, 'nonceKeys').map((k) =>
-      parseRlpUint(asHex(k, 'nonceKeys[]')),
-    ),
-    nonceSeq: parseRlpUint(asHex(fields[2]!, 'nonceSeq')),
+    chainId: asUint(fields[0]!, 'chainId'),
+    nonceKeys: asList(fields[1]!, 'nonceKeys').map((k) => asUint(k, 'nonceKeys[]')),
+    nonceSeq: asUint(fields[2]!, 'nonceSeq'),
     sender,
     frames: asList(fields[4]!, 'frames').map(decodeFrame),
     signatures: asList(fields[5]!, 'signatures').map(decodeSignature),
-    maxPriorityFeePerGas: parseRlpUint(asHex(fees[0]!, 'maxPriorityFeePerGas')),
-    maxFeePerGas: parseRlpUint(asHex(fees[1]!, 'maxFeePerGas')),
-    maxFeePerBlobGas: parseRlpUint(asHex(fees[2]!, 'maxFeePerBlobGas')),
+    maxPriorityFeePerGas: asUint(fees[0]!, 'maxPriorityFeePerGas'),
+    maxFeePerGas: asUint(fees[1]!, 'maxFeePerGas'),
+    maxFeePerBlobGas: asUint(fees[2]!, 'maxFeePerBlobGas'),
     blobVersionedHashes: asList(fields[7]!, 'blobVersionedHashes').map((h) =>
       asHex(h, 'blobVersionedHashes[]'),
     ),
@@ -160,15 +186,18 @@ function decodeFields(fields: RlpTree[], fees: RlpTree[], sender: Address): Fram
  * anything the chain accepted, and does not apply the encode-side structural
  * rules.
  *
- * It is not lenient about RLP well-formedness. viem's `fromRlp` accepts
- * non-canonical encodings — the scalar 7 written long-form as `0x8107` rather
- * than `0x07`, say — and quietly returns the canonical value, so a decode
- * followed by an encode would launder bytes the node rejects at RLP decode into
- * bytes it accepts, with nothing downstream able to tell. ethrex rejects those
- * bytes, so this function does too: the decoded transaction is re-encoded and
- * compared to the input (case-insensitively — viem emits lowercase hex, callers
- * may pass uppercase), and a mismatch throws `FrameDecodeError`. Trailing bytes
- * after the body are already rejected by `fromRlp` itself.
+ * It is not lenient about RLP well-formedness. The body is walked by `walkRlp`
+ * (in `rlp.ts`) rather than viem's `fromRlp`, which accepts non-canonical
+ * encodings — the scalar 7 written long-form as `0x8107` rather than `0x07`,
+ * say — and quietly returns the canonical value, so a decode followed by an
+ * encode would launder bytes the node rejects at RLP decode into bytes it
+ * accepts. `walkRlp` rejects those bytes the way ethrex does, and reports the
+ * byte offset it found the problem at; every `FrameDecodeError` this function
+ * raises carries that offset, counting the `0x06` type byte as byte 0.
+ *
+ * A re-encoding is still compared against the input as a backstop for any
+ * non-canonical shape the walker does not catch directly (compared
+ * case-insensitively — viem emits lowercase hex, callers may pass uppercase).
  *
  * Strict decode is this function followed by `assertValidFrameTx` (in
  * `signatures.ts`, which wraps `validateFrameTx` below) rather than a boolean
@@ -179,42 +208,43 @@ export function decodeFrameTx(raw: Hex): FrameTransaction {
     throw new FrameDecodeError(`expected type 0x06, got ${raw.slice(0, 4)}`, 0)
 
   const body = `0x${raw.slice(4)}` as Hex
-  let tree: RlpTree
+  let tree: RlpNode
   try {
-    tree = fromRlp(body, 'hex') as RlpTree
+    tree = walkRlp(body, TYPE_PREFIX_BYTES)
   } catch (cause) {
-    throw new FrameDecodeError(`malformed RLP body: ${(cause as Error).message}`, 1)
+    if (cause instanceof FrameRlpError)
+      throw new FrameDecodeError(`malformed RLP body: ${cause.message}`, cause.offset)
+    throw cause
   }
 
   const fields = asList(tree, 'envelope')
   if (fields.length !== 9)
-    throw new FrameDecodeError(`envelope must have 9 fields, got ${fields.length}`, 1)
+    throw new FrameDecodeError(
+      `envelope must have 9 fields, got ${fields.length}`,
+      tree.start,
+    )
 
   const fees = asList(fields[6]!, 'fees')
   if (fees.length !== 3)
-    throw new FrameDecodeError(`fees must have 3 fields, got ${fees.length}`)
+    throw new FrameDecodeError(
+      `fees must have 3 fields, got ${fees.length}`,
+      fields[6]!.start,
+    )
 
   const sender = asAddressOrNull(fields[3]!, 'sender')
-  if (sender === null) throw new FrameDecodeError('sender may not be empty')
+  if (sender === null)
+    throw new FrameDecodeError('sender may not be empty', fields[3]!.start)
 
-  // `parseRlpUint` reports a non-minimal scalar (a leading zero byte) as an RLP
-  // error; on this path it is a malformed body, so it surfaces as a decode error
-  // like the long-form case caught by the re-encode comparison below.
-  let tx: FrameTransaction
-  try {
-    tx = decodeFields(fields, fees, sender)
-  } catch (err) {
-    if (err instanceof FrameRlpError) throw new FrameDecodeError(err.message)
-    throw err
-  }
+  const tx = decodeFields(fields, fees, sender)
 
-  // Canonicality: viem's `fromRlp` silently accepts long-form encodings of short
-  // strings and non-minimal length prefixes, which ethrex rejects. Comparing a
-  // re-encoding to the input is the cheapest complete check, and it holds for
+  // Backstop: `walkRlp` already rejects a long-form scalar and a non-minimal
+  // length prefix at their offset, so this only fires for a canonicality bug the
+  // walker misses — an independent check kept because it is cheap and holds for
   // every transaction the chain actually accepted.
   if (encodeFrameTx(tx).toLowerCase() !== raw.toLowerCase())
     throw new FrameDecodeError(
       're-encoding does not reproduce the input bytes: non-canonical RLP, which ethrex rejects at decode',
+      TYPE_PREFIX_BYTES,
     )
 
   return tx
