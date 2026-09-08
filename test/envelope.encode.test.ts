@@ -45,13 +45,17 @@ describe('encodeFrameTx', () => {
 // otherwise unpinned. A 128-byte signature crosses the RLP short/long-string
 // boundary (>55 bytes), so it must encode as `b8 80 <128 bytes>`.
 describe('encodeFrameTx: P256 signature entry', () => {
+  // A distinguishable 32-byte `msg` so the field order is actually asserted:
+  // with an empty signer and an empty msg both encoding as 0x80, the entry is
+  // invariant under a signer/msg swap.
+  const MSG = `0x${'ab'.repeat(32)}` as const
   const p256Tx = {
     ...GOLDEN_TX,
     signatures: [
       {
         scheme: 2 as const,
         signer: null,
-        msg: '0x' as const,
+        msg: MSG,
         signature: `0x${'2b'.repeat(128)}` as const,
       },
     ],
@@ -61,9 +65,11 @@ describe('encodeFrameTx: P256 signature entry', () => {
     expect(encodeFrameTx(p256Tx)).toContain(`b880${'2b'.repeat(128)}`)
   })
 
-  test('the scheme byte is 02 and the signer is the empty string', () => {
-    // signature entry: <list> 02 80 80 b880<128>  (scheme, empty signer, empty msg)
-    expect(encodeFrameTx(p256Tx)).toContain(`028080b880${'2b'.repeat(128)}`)
+  test('the entry is scheme, empty signer, msg, signature in that order', () => {
+    // 02 (scheme) | 80 (empty signer) | a0 <32-byte msg> | b8 80 <128-byte sig>
+    expect(encodeFrameTx(p256Tx)).toContain(
+      `0280a0${'ab'.repeat(32)}b880${'2b'.repeat(128)}`,
+    )
   })
 
   test('round-trips through decodeFrameTx', () => {

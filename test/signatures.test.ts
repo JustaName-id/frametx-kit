@@ -16,6 +16,25 @@ import { GOLDEN_TX } from './fixtures/golden.js'
 
 const PRIVATE_KEY = `0x${'11'.repeat(32)}` as const
 
+// The canonical `s <= n/2` and `r < n` checks are only as correct as `n`. Every
+// bound in the tests below is derived from these constants, so a wrong group
+// order — the one error that would make `assertCanonicalSignature` accept a
+// signature the chain rejects at consensus — is invisible unless the constant
+// itself is pinned to a figure typed from the standard, not from `src/`.
+describe('published curve orders', () => {
+  test('SECP256K1_N is the secp256k1 group order n (SEC 2)', () => {
+    expect(SECP256K1_N).toBe(
+      0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n,
+    )
+  })
+
+  test('SECP256R1_N is the secp256r1 / NIST P-256 group order n (SEC 2)', () => {
+    expect(SECP256R1_N).toBe(
+      0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n,
+    )
+  })
+})
+
 describe('assertCanonicalSignature', () => {
   test('rejects a 27/28-encoded v', () => {
     const sig = { scheme: 1 as const, signer: null, msg: '0x' as const,
@@ -63,8 +82,9 @@ describe('assertCanonicalSignature', () => {
 
 // P256 (scheme 2) — DESIGN.md §3: `signature = r||s||qx||qy`, 128 bytes,
 // `0 < r < SECP256R1N`, `0 < s <= SECP256R1N/2`. `P256VERIFY` accepts high s, so
-// the signer must normalize before use. Bounds pinned to the published group
-// order, not to the code's output. No captured fixture uses scheme 2, so this
+// the signer must normalize before use. The bounds below are expressed in terms
+// of SECP256R1_N, which the "published curve orders" block above pins to a
+// literal typed from the standard. No captured fixture uses scheme 2, so this
 // path was previously exercised only by a single wrong-length negative.
 describe('assertCanonicalSignature: P256 canonical rules', () => {
   const hex32 = (v: bigint): string => v.toString(16).padStart(64, '0')
@@ -103,15 +123,6 @@ describe('assertCanonicalSignature: P256 canonical rules', () => {
     expect(() =>
       assertCanonicalSignature(p256(1n, SECP256R1_N / 2n + 1n), 0),
     ).toThrow(/normalize to n - s/)
-  })
-
-  test('the n/2 boundary is SECP256R1_N / 2, not (N-1)/2 rounded up', () => {
-    // Guard the off-by-one: n is odd, so n/2 in integer division is (n-1)/2 and
-    // that exact value must pass while the next integer must not.
-    expect(() => assertCanonicalSignature(p256(1n, SECP256R1_N / 2n), 0)).not.toThrow()
-    expect(() =>
-      assertCanonicalSignature(p256(1n, SECP256R1_N / 2n + 1n), 0),
-    ).toThrow()
   })
 })
 
