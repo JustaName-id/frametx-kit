@@ -3,6 +3,7 @@ import type { Address, Hex } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import {
   SECP256K1_N,
+  SECP256R1_N,
   assertCanonicalSignature,
   assertValidFrameTx,
   recoverFrameSigner,
@@ -60,6 +61,60 @@ describe('assertCanonicalSignature', () => {
   })
 })
 
+// P256 (scheme 2) — DESIGN.md §3: `signature = r||s||qx||qy`, 128 bytes,
+// `0 < r < SECP256R1N`, `0 < s <= SECP256R1N/2`. `P256VERIFY` accepts high s, so
+// the signer must normalize before use. Bounds pinned to the published group
+// order, not to the code's output. No captured fixture uses scheme 2, so this
+// path was previously exercised only by a single wrong-length negative.
+describe('assertCanonicalSignature: P256 canonical rules', () => {
+  const hex32 = (v: bigint): string => v.toString(16).padStart(64, '0')
+  const p256 = (r: bigint, s: bigint) => ({
+    scheme: 2 as const,
+    signer: null,
+    msg: '0x' as const,
+    signature: `0x${hex32(r)}${hex32(s)}${'00'.repeat(64)}` as Hex,
+  })
+
+  test('accepts a well-formed low-s signature', () => {
+    expect(() => assertCanonicalSignature(p256(1n, 1n), 0)).not.toThrow()
+  })
+
+  test('accepts r one below the group order and s exactly at n/2', () => {
+    expect(() =>
+      assertCanonicalSignature(p256(SECP256R1_N - 1n, SECP256R1_N / 2n), 0),
+    ).not.toThrow()
+  })
+
+  test('rejects r = 0', () => {
+    expect(() => assertCanonicalSignature(p256(0n, 1n), 0)).toThrow(/r must be in \(0, n\)/)
+  })
+
+  test('rejects r equal to the group order', () => {
+    expect(() => assertCanonicalSignature(p256(SECP256R1_N, 1n), 0)).toThrow(
+      /r must be in \(0, n\)/,
+    )
+  })
+
+  test('rejects s = 0', () => {
+    expect(() => assertCanonicalSignature(p256(1n, 0n), 0)).toThrow(/s must be low/)
+  })
+
+  test('rejects s just above n/2 and points at normalization', () => {
+    expect(() =>
+      assertCanonicalSignature(p256(1n, SECP256R1_N / 2n + 1n), 0),
+    ).toThrow(/normalize to n - s/)
+  })
+
+  test('the n/2 boundary is SECP256R1_N / 2, not (N-1)/2 rounded up', () => {
+    // Guard the off-by-one: n is odd, so n/2 in integer division is (n-1)/2 and
+    // that exact value must pass while the next integer must not.
+    expect(() => assertCanonicalSignature(p256(1n, SECP256R1_N / 2n), 0)).not.toThrow()
+    expect(() =>
+      assertCanonicalSignature(p256(1n, SECP256R1_N / 2n + 1n), 0),
+    ).toThrow()
+  })
+})
+
 describe('resolveSigner', () => {
   test('an empty signer resolves to tx.sender', () => {
     const tx = {
@@ -71,6 +126,29 @@ describe('resolveSigner', () => {
 
   test('an explicit signer is returned as given', () => {
     expect(resolveSigner(GOLDEN_TX, 0)).toBe(GOLDEN_TX.signatures[0]!.signer)
+  })
+
+  // DESIGN.md §3: "An empty `signer` resolves to `tx.sender` for SECP256K1 and
+  // P256". Only ARBITRARY has no resolved signer.
+  test('a P256 entry with an empty signer resolves to tx.sender', () => {
+    const tx = {
+      ...GOLDEN_TX,
+      signatures: [
+        { scheme: 2 as const, signer: null, msg: '0x' as const,
+          signature: `0x${'11'.repeat(128)}` as const },
+      ],
+    }
+    expect(resolveSigner(tx, 0)).toBe(tx.sender)
+  })
+
+  test('an ARBITRARY entry has no resolved signer', () => {
+    const tx = {
+      ...GOLDEN_TX,
+      signatures: [
+        { scheme: 0 as const, signer: null, msg: '0x' as const, signature: '0xdead' as const },
+      ],
+    }
+    expect(() => resolveSigner(tx, 0)).toThrow(/no resolved signer/)
   })
 })
 
@@ -136,6 +214,20 @@ describe('signFrameTx and recoverFrameSigner', () => {
     await expect(recoverFrameSigner(tx, 0)).rejects.toThrow(/only defined for secp256k1/)
   })
 
+  // P256 carries its own public key (r||s||qx||qy); there is nothing to recover,
+  // so `recoverFrameSigner` is secp256k1-only and must refuse scheme 2 rather
+  // than feed 128 bytes into a 65-byte recovery.
+  test('recoverFrameSigner rejects rather than throwing for a P256 entry', async () => {
+    const tx = {
+      ...GOLDEN_TX,
+      signatures: [
+        { scheme: 2 as const, signer: null, msg: '0x' as const,
+          signature: `0x${'11'.repeat(128)}` as const },
+      ],
+    }
+    await expect(recoverFrameSigner(tx, 0)).rejects.toThrow(/only defined for secp256k1/)
+  })
+
   test('recoverFrameSigner rejects rather than throwing for a non-canonical signature', async () => {
     const tx = {
       ...GOLDEN_TX,
@@ -195,6 +287,37 @@ describe('assertValidFrameTx', () => {
       frames: [{ ...GOLDEN_TX.frames[0]!, data: '0xzz11' as const }, GOLDEN_TX.frames[1]!],
     }
     expect(() => assertValidFrameTx(tx)).toThrow(FrameEncodeError)
+  })
+
+  // The full strict path — validateFrameTx then assertCanonicalSignature — over a
+  // scheme-2 entry. No fixture reaches it.
+  test('accepts a transaction carrying a canonical P256 signature', () => {
+    const canonicalP256 =
+      `0x${(2n).toString(16).padStart(64, '0')}${(3n)
+        .toString(16)
+        .padStart(64, '0')}${'00'.repeat(64)}` as const
+    const tx = {
+      ...GOLDEN_TX,
+      signatures: [
+        { scheme: 2 as const, signer: GOLDEN_TX.sender, msg: '0x' as const,
+          signature: canonicalP256 },
+      ],
+    }
+    expect(() => assertValidFrameTx(tx)).not.toThrow()
+  })
+
+  test('rejects a transaction carrying a high-s P256 signature', () => {
+    const highS =
+      `0x${(2n).toString(16).padStart(64, '0')}${(SECP256R1_N / 2n + 1n)
+        .toString(16)
+        .padStart(64, '0')}${'00'.repeat(64)}` as const
+    const tx = {
+      ...GOLDEN_TX,
+      signatures: [
+        { scheme: 2 as const, signer: GOLDEN_TX.sender, msg: '0x' as const, signature: highS },
+      ],
+    }
+    expect(() => assertValidFrameTx(tx)).toThrow(/s must be low/)
   })
 })
 

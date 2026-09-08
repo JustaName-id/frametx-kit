@@ -85,6 +85,51 @@ describe('recent-root references', () => {
   })
 })
 
+describe('signature verification cost by scheme', () => {
+  // EIP-8141 Constants table (DESIGN.md §4): ARBITRARY 100, SECP256K1 2800,
+  // P256 6700. Hand-written figures, not read back from SIG_VERIFY_COST. No
+  // captured fixture carries a scheme-0 or scheme-2 entry.
+  const withSchemes = (schemes: (0 | 1 | 2)[]) => ({
+    ...GOLDEN_TX,
+    signatures: schemes.map((scheme) => ({
+      scheme,
+      signer: null,
+      msg: '0x' as const,
+      signature:
+        scheme === 1
+          ? (`0x${'11'.repeat(65)}` as const)
+          : scheme === 2
+            ? (`0x${'11'.repeat(128)}` as const)
+            : ('0xdeadbeef' as const),
+    })),
+  })
+
+  test('an ARBITRARY entry adds 100', () => {
+    expect(frameTxGas(withSchemes([0]), 'chain').signatureVerificationCost).toBe(100n)
+  })
+
+  test('a SECP256K1 entry adds 2800', () => {
+    expect(frameTxGas(withSchemes([1]), 'chain').signatureVerificationCost).toBe(2_800n)
+  })
+
+  test('a P256 entry adds 6700', () => {
+    expect(frameTxGas(withSchemes([2]), 'chain').signatureVerificationCost).toBe(6_700n)
+  })
+
+  test('the cost is the sum across a mixed list', () => {
+    expect(
+      frameTxGas(withSchemes([1, 2, 0]), 'chain').signatureVerificationCost,
+    ).toBe(2_800n + 6_700n + 100n)
+  })
+
+  test('it feeds mandatoryGas: 12000 + 475*len(frames) + sig cost', () => {
+    // Golden has two frames; a lone P256 entry -> 12000 + 950 + 6700.
+    expect(frameTxGas(withSchemes([2]), 'chain').mandatoryGas).toBe(
+      12_000n + 475n * 2n + 6_700n,
+    )
+  })
+})
+
 describe('rule sets', () => {
   test("'head' prices identically to 'pins' — the head change is execution-time state gas", () => {
     expect(frameTxGas(GOLDEN_TX, 'head')).toEqual(frameTxGas(GOLDEN_TX, 'pins'))
