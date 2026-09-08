@@ -1,7 +1,7 @@
 # frametx-kit — design
 
 **Date:** 2026-09-06
-**Status:** implemented; binding on the code in this repository. Reviewed against ethrex `hegota-testnet` @ `19c065fa8` and the live node on 2026-09-06; §5, §6 and §9 amended for the RPC surface actually served (no raw transaction bytes). §5, §7 and §8 amended 2026-09-07 to match the module graph, strict-decode surface and entry-point name as built. §7 amended 2026-09-08: the byte-offset promise is delivered by a hand-rolled `walkRlp`, not deferred.
+**Status:** implemented; binding on the code in this repository. Reviewed against ethrex `hegota-testnet` @ `19c065fa8` and the live node on 2026-09-06; §5, §6 and §9 amended for the RPC surface actually served (no raw transaction bytes). §5, §7 and §8 amended 2026-09-07 to match the module graph, strict-decode surface and entry-point name as built. §7 amended 2026-09-08: the byte-offset promise is delivered by a hand-rolled `walkRlp`, not deferred. §3 and §5 amended 2026-09-08: `signFrameTx` also signs P256 entries when the account provides a `signP256`, normalizing `s` to the low half.
 **Target network:** hegota-testnet, chain ID `8141`, genesis `0x7ca0f735…cd0f2332`
 **Reference client:** [`lambdaclass/ethrex`, branch `hegota-testnet`](https://github.com/lambdaclass/ethrex/tree/hegota-testnet). Every `.rs`, `.py` and `docs/*.md` path cited below is a path in that repository, not in this one.
 
@@ -133,17 +133,27 @@ introspection.
 ### Signing
 
 `signFrameTx(tx, signer)` takes either a raw private key or a `FrameAccount` —
-`{ address, sign }`, satisfied by viem's `privateKeyToAccount` and `mnemonicToAccount`, by a
-`toAccount` source, and by any wrapper around a hardware wallet, an HSM or a remote signer.
-It signs exactly the entries that are SECP256K1 with an empty `msg`, over `sig_hash`, and
-refuses when an entry's resolved signer is not the account's address — otherwise the result
-would recover to the wrong address and be rejected at consensus with no local error.
+`{ address, sign, signP256 }`, satisfied by viem's `privateKeyToAccount` and
+`mnemonicToAccount`, by a `toAccount` source, and by any wrapper around a hardware wallet,
+an HSM, a passkey or a remote signer. It signs the empty-`msg` entries it can: SECP256K1
+entries over `sig_hash` with `sign`, and — when the account carries a `signP256` — P256
+entries too, and refuses when an entry's resolved signer is not the account's address —
+otherwise the result would authenticate against the wrong address and be rejected at
+consensus with no local error.
+
+A P256 signer returns `r || s || qx || qy` with any `s`; `signFrameTx` rewrites it to
+low-`s` (`normalizeP256Signature`, `s → n - s` when `s > n/2`), which is a valid ECDSA
+signature against the same key and the form consensus requires — WebAuthn and passkey
+signers routinely emit high `s`. It does **not** verify a P256 signature: scheme 2 has no
+address recovery, so the signer owns `r`, `s` and the embedded key and the library owns
+only the wire form. An ARBITRARY entry, and a P256 entry with no `signP256` available, are
+left untouched for the caller to fill, then `assertValidFrameTx` checks them.
 
 **Raw-digest signing is required.** `signMessage` prefixes its argument per EIP-191, so it
 cannot produce a signature over `sig_hash`, and a `JsonRpcAccount` cannot sign a raw digest
-at all. Both are refused with an error rather than silently producing an unrecoverable
-signature. `sign` is typed optional because it is optional on viem's own `LocalAccount`;
-the check is at runtime.
+at all. An account with neither `sign` nor `signP256` is refused with an error rather than
+silently producing an unrecoverable signature. Both signer fields are typed optional
+because `sign` is optional on viem's own `LocalAccount`; the check is at runtime.
 
 **A returned `v` is normalized, not assumed.** viem returns 27/28; HSMs and hand-rolled
 wrappers commonly return a bare 0/1. Both are accepted. An EIP-155 `v` is refused: it
@@ -296,7 +306,7 @@ Ten source files in dependency order. Nothing depends on anything above it.
 | `rlp` | `rlpUint`, `parseRlpUint`, `byteLength`: minimal-scalar rules viem does not enforce; `walkRlp`, an offset-tracking RLP reader that rejects the non-canonical encodings `fromRlp` accepts. | `errors` |
 | `envelope` | `encodeFrameTx`, `decodeFrameTx`, `validateFrameTx`. Pure, no IO. | `rlp`, `errors`, `types`, viem `toRlp` |
 | `sighash` | The elision rule plus keccak256. | `envelope` |
-| `signatures` | Canonical rules, signer recovery, empty-signer resolution, signing (private key or external account), `assertValidFrameTx`. | `sighash`, `envelope` |
+| `signatures` | Canonical rules, signer recovery, empty-signer resolution, signing (SECP256K1 and, with a `signP256`, P256 — `normalizeP256Signature` for low-`s`), `assertValidFrameTx`. | `sighash`, `envelope` |
 | `gas` | The whole of §4, parameterized by rule set. Pure, no IO. | `rlp`, `errors`, `types` only |
 | `divergence` | `compareRuleSets` and the head EIP-8250 state-gas figure. | `gas` |
 | `rpc` | Typed `ethrex_simulateFrameTransaction`; frame-aware transaction and receipt formatters. | `errors`, `types` only |
