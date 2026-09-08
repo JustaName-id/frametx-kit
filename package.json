@@ -1,6 +1,6 @@
 {
   "name": "@jaw.id/frametx-kit",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Read, build, hash, sign, price and simulate EIP-8141 frame transactions as hegota-testnet accepts them.",
   "license": "MIT",
   "type": "module",
