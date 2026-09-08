@@ -8,13 +8,15 @@ Nothing here is blocking. In rough priority order:
 
 - **The head reference price is a floor, not a budget.** `toHeadShape` rewrites a
   reference-carrying transaction into its EIP-8272 head equivalent, so the divergence
-  survey prices one instead of refusing it. The synthetic VERIFY frame claims zero
-  execution and state, because no draft pins what a VERIFY against `0x…8272` costs, so
-  every limit-derived term of the head price is a lower bound. `frameTxGas(tx, 'head')`
+  survey prices one instead of refusing it. The synthetic "recent root verifier frame"
+  claims zero execution and state. `limits.state == 0` is normative (upstream
+  `eip-8272.md` @ `824cbc0b0`, §Recent root verifier frame); `limits.execution` is the one
+  figure the spec does not pin — it falls out of the `STATICCALL` and one `SLOAD` per tuple
+  — so every limit-derived term of the head price is a lower bound. `frameTxGas(tx, 'head')`
   still refuses a reference-carrying transaction for that reason: comparing against a
-  floor is sound, budgeting `limits.state` against one is not. The transform assumes a packing
-  of `sourceId || slot || root`, at 32 + 8 + 32. Those widths are forced; the field order is
-  not confirmed against the draft. If it disagrees, one function changes.
+  floor is sound, budgeting against one is not. The tuple packing
+  (`source_id: bytes32 || slot: uint64_be || root: bytes32`, 72 bytes,
+  `RECENT_ROOT_TUPLE_BYTES`) is confirmed against that spec — order and widths both.
 - **Fixture coverage gaps that are facts about the chain, not omissions:** no captured
   transaction uses signature scheme 2 (P256) or a targetless value-carrying frame — the
   latter is the only shape where `'chain'` and `'pins'` diverge, so the divergence survey's

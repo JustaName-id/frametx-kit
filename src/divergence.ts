@@ -14,17 +14,22 @@ export const HEAD_KEYED_NONCE_STATE_GAS = 97_920n
 
 /**
  * EIP-8272 at head: the envelope field, `TXPARAM 0x11` and `RECENTROOTREFLOAD` are
- * gone. References travel instead as a leading VERIFY frame against this address.
+ * gone. References travel instead as a "recent root verifier frame" against this
+ * address (upstream `eip-8272.md` @ `824cbc0b0`, §Recent root verifier frame).
  */
 export const HEAD_RECENT_ROOT_VERIFIER: Address =
   '0x0000000000000000000000000000000000008272'
 
-/** One packed reference: 32-byte source id, 8-byte slot, 32-byte root. */
+/**
+ * `RECENT_ROOT_TUPLE_BYTES` from upstream `eip-8272.md`: one packed reference is
+ * `source_id: bytes32 || slot: uint64_be || root: bytes32`, 32 + 8 + 32.
+ */
 export const HEAD_REFERENCE_BYTES = 72
 
-// The slot takes 8 bytes because `validateFrameTx` already holds it to a u64
-// (envelope.ts, `assertUint(ref.slot, 64, …)`), which is also the only width that
-// adds up to the draft's 72.
+// Field order and widths per upstream `eip-8272.md` @ `824cbc0b0`
+// (§"Validation operation"): the tuples are concatenated with no selector or
+// length prefix. `slot` is a big-endian u64 — the same width `validateFrameTx`
+// already holds it to (`assertUint(ref.slot, 64, …)`).
 function packReference(ref: RecentRootReference): Hex {
   return concatHex([ref.sourceId, numberToHex(ref.slot, { size: 8 }), ref.root])
 }
@@ -33,11 +38,18 @@ function packReference(ref: RecentRootReference): Hex {
  * The head-shaped equivalent of a reference-carrying transaction: the envelope
  * field emptied, its contents prepended as one VERIFY frame.
  *
- * The synthetic frame's limits are zero because no draft pins what a VERIFY
- * against `0x…8272` costs. Every limit-derived gas term of the result is
- * therefore a floor, which is why this is the divergence survey's entry point and
- * `frameTxGas(tx, 'head')` still refuses a reference-carrying transaction: a
- * floor is fine to compare against and wrong to budget with.
+ * The frame's `mode`, `target`, `flags`, `value` and `limits.state` are the ones
+ * upstream `eip-8272.md` (§Recent root verifier frame) makes normative for the
+ * shape. Its `limits.execution` is set to zero because that is the one figure the
+ * spec does not pin — it falls out of executing the `STATICCALL` and one `SLOAD`
+ * per tuple — so every limit-derived gas term of the result is a floor. That is
+ * why this is the divergence survey's entry point and `frameTxGas(tx, 'head')`
+ * still refuses a reference-carrying transaction: a floor is fine to compare
+ * against and wrong to budget with.
+ *
+ * The frame is prepended at index 0. The spec places it after an optional
+ * `expiry_verify` frame, but frame order does not affect the gas terms priced
+ * here, so the survey does not model the offset.
  *
  * Identity for a transaction that carries no reference.
  */
