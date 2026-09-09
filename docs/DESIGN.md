@@ -50,21 +50,29 @@ eventual PR borrows from.
 
 ## 2. Scope
 
-### In scope (pass 1)
+### In scope
 
 Decoding, encoding, `sig_hash`, signing, the gas model, and `ethrex_simulateFrameTransaction`.
 
 `ethrex_simulateFrameTransaction` takes a **raw hex string** as its first parameter
 (`crates/networking/rpc/ethrex.rs:120`) and replays "EIP-8141 static constraints and signature
 authentication" (`ethrex.rs:44`). Simulation therefore requires a working encoder and real
-signatures. "Read-only plus simulate" is everything except broadcast.
+signatures — the encoder is on the critical path for the dry run, not just for sending.
 
-Signing uses a throwaway key that holds no funds. Nothing in pass 1 can alter chain state.
+Signing uses a throwaway key that holds no funds. Nothing in either test suite can alter
+chain state.
 
-### Deferred (pass 2)
+### Also in scope (added 2026-09-09)
 
-`eth_sendRawTransaction`: submitting a live frame transaction, funded from
-`faucet.privacy.ethrex.xyz`, and reading back per-frame receipts.
+`eth_sendRawTransaction`, as `sendRawFrameTransaction` in `rpc` and
+`frameActions(client).sendFrameTransaction` in `viem`, plus a frame-aware receipt wait. The
+node takes the same `0x06 || rlp(body)` bytes it takes for simulation, and the hash it returns
+is checked against `keccak256` of those bytes — the mirror of the read-side pin.
+
+Admission still requires a sender whose VERIFY prefix calls `APPROVE`. A throwaway EOA cannot
+do that, so no test in this repository broadcasts: the hermetic suite stubs the node, and the
+`FRAMES_LIVE` suite remains read-only plus simulate. A live broadcast gate needs a deployed
+sender contract and a funded key; it is recorded in `OPEN-ITEMS.md`, not built.
 
 ### Out of scope
 
@@ -266,7 +274,7 @@ The two divergences that separate `'chain'` from `'pins'`:
 - **`SIGPARAM(0x03)`** — the chain returns `len(signature)` for every scheme; the pins permit it
   for ARBITRARY entries only and require an exceptional halt otherwise. This one is not a gas
   divergence and affects validation-prefix replay rather than the gas model, so it is recorded
-  but not modelled in pass 1.
+  but not modelled.
 
 What `'head'` changes, per the branch spec's "Changed upstream since the pins":
 
@@ -307,8 +315,8 @@ Ten source files in dependency order. Nothing depends on anything above it.
 | `signatures` | Canonical rules, signer recovery, empty-signer resolution, signing (private key or external account), `assertValidFrameTx`. | `sighash`, `envelope` |
 | `gas` | The whole of §4, parameterized by rule set. Pure, no IO. | `rlp`, `errors`, `types` only |
 | `divergence` | `compareRuleSets` and the head EIP-8250 state-gas figure. | `gas` |
-| `rpc` | Typed `ethrex_simulateFrameTransaction`; frame-aware transaction and receipt formatters. | `errors`, `types` only |
-| `viem` | `client.extend(frameActions)`. Thin — no logic of its own. | `envelope`, `rpc`, `gas` |
+| `rpc` | Typed `ethrex_simulateFrameTransaction` and `eth_sendRawTransaction` (hash-pinned); frame-aware transaction and receipt formatters. | `errors`, `types` only |
+| `viem` | `client.extend(frameActions)`. Thin — no wire logic of its own. | `envelope`, `signatures`, `rpc`, `gas` |
 | `fixtures` | The golden vector plus captured real transactions, as JSON. | — |
 
 `gas` deliberately does not depend on `envelope` or `rpc`, and `rpc` does not depend on
@@ -470,11 +478,14 @@ Each terminates in a check that fails loudly when understanding is wrong.
    `valid: true`: the shape is derived after signature authentication, so a recognized shape
    proves decoding and authentication, but a throwaway EOA has no code to call `APPROVE`, and
    the node answers `valid: false, violation: "validation prefix frame reverted"`. A `valid:
-   true` gate needs a deployed sender contract and belongs to pass 2.
+   true` gate needs a deployed sender contract, which is an open item rather than a milestone.
 6. **viem extension.** Gate: `client.extend(frameActions)` reads a frame transaction and its
    three-valued frame receipts through ordinary viem ergonomics.
-
-Deferred to pass 2: broadcast.
+7. **Broadcast.** `sendFrameTransaction` and `waitForFrameTransactionReceipt`. Gate: hermetic
+   only — the bytes posted equal `encodeFrameTx` of the input, a hash that is not
+   `keccak256` of those bytes is refused, and a skipped frame survives the receipt wait as
+   `'skipped'`. The live gate (a `valid: true` simulation followed by an accepted broadcast)
+   needs a deployed sender contract and is an open item.
 
 ## 10. Candidate contributions
 

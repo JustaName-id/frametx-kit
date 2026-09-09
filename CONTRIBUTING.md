@@ -124,8 +124,9 @@ Historical state is pruned. `ethrex_simulateFrameTransaction` works only against
 ## Module order
 
 `rlp` / `errors` / `types` → `envelope` → `sighash` → `signatures`. `gas` depends only on
-`rlp` and `types`. `rpc` depends only on `errors` and `types`. `viem` sits on top and
-holds no logic of its own. `divergence` depends on `gas`. Nothing imports upward.
+`rlp` and `types`. `rpc` depends only on `errors` and `types`. `viem` sits on top — it
+composes `envelope`, `signatures`, `rpc` and `gas` and holds no wire logic of its own.
+`divergence` depends on `gas`. Nothing imports upward.
 
 ## Verification
 

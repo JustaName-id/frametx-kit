@@ -56,5 +56,6 @@ export {
   type SimulateFrameTransactionResult,
   parseRpcFrameReceipt,
   parseRpcFrameTransaction,
+  sendRawFrameTransaction,
   simulateFrameTransaction,
 } from './rpc.js'

@@ -7,7 +7,7 @@ TypeScript for **EIP-8141 frame transactions** as hegota-testnet (chain ID `8141
 actually accepts them: the composed envelope that also carries EIP-8250 keyed nonces
 and EIP-8272 recent-root references.
 
-Decode, build, hash, sign, price and dry-run. It does not broadcast.
+Decode, build, hash, sign, price, dry-run and broadcast.
 
 ## Install
 
@@ -70,6 +70,21 @@ transaction the chain silently rejects.
 P256 and ARBITRARY entries are left untouched; build those signatures yourself and let
 `assertValidFrameTx` check them. `signFrameTx` also handles one signer at a time, so a
 transaction with entries for two different signers needs the bytes assembled by hand.
+
+Sending walks the strict path for you — `assertValidFrameTx`, `encodeFrameTx`,
+`eth_sendRawTransaction` — and checks that the hash the node returns is `keccak256` of the
+bytes it was given. The receipt wait is frame-aware: a skipped frame comes back as
+`'skipped'`, not as a revert.
+
+```ts
+const hash = await client.sendFrameTransaction({ transaction: signed })
+const receipt = await client.waitForFrameTransactionReceipt({ hash })
+```
+
+Passing every check here does not guarantee admission. On this chain the VERIFY prefix must
+call `APPROVE`, which a plain EOA sender cannot do, so a broadcastable transaction needs a
+sender contract and a funded key — both are yours, not this library's. Dry-run with
+`client.simulateFrameTransaction({ raw })` before spending.
 
 ## Two things that will bite you
 
