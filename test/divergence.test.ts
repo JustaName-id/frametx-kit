@@ -115,21 +115,25 @@ describe('toHeadShape', () => {
     expect(head.frames.slice(1)).toEqual(GOLDEN_TX.frames)
   })
 
-  test('the synthetic frame is a valueless VERIFY against the 8272 verifier', () => {
+  // upstream eip-8272.md @ 824cbc0b0, §"Recent root verifier frame": the shape
+  // is normative — mode VERIFY, target RECENT_ROOT_ADDRESS, flags 0, value 0,
+  // limits.state 0 — and the data is n tuples with no selector or length prefix.
+  test('the synthetic frame matches the EIP-8272 recent-root-verifier-frame shape', () => {
     const verify = toHeadShape(TWO_REFERENCE_TX).frames[0]!
-    expect(verify.mode).toBe(1)
-    expect(verify.flags).toBe(0)
+    expect(verify.mode).toBe(1) // VERIFY
     expect(verify.target).toBe(HEAD_RECENT_ROOT_VERIFIER)
+    expect(verify.flags).toBe(0)
     expect(verify.value).toBe(0n)
+    expect(verify.limits.state).toBe(0n)
+    // RECENT_ROOT_TUPLE_BYTES <= len(data), len(data) % RECENT_ROOT_TUPLE_BYTES == 0
+    expect(size(verify.data)).toBeGreaterThanOrEqual(HEAD_REFERENCE_BYTES)
+    expect(size(verify.data) % HEAD_REFERENCE_BYTES).toBe(0)
   })
 
-  // Zero, not a plausible figure: no draft pins what a VERIFY against 0x…8272
-  // costs, so every limit-derived term of the head price is a floor.
-  test('the synthetic frame claims no execution or state budget', () => {
-    expect(toHeadShape(TWO_REFERENCE_TX).frames[0]!.limits).toEqual({
-      execution: 0n,
-      state: 0n,
-    })
+  // limits.execution is the one field the spec does NOT pin — it falls out of
+  // the STATICCALL and one SLOAD per tuple — so zero is a deliberate floor.
+  test('the synthetic frame claims no execution budget: a floor, not a figure', () => {
+    expect(toHeadShape(TWO_REFERENCE_TX).frames[0]!.limits.execution).toBe(0n)
   })
 
   test('both references pack into one frame, 72 bytes each', () => {
@@ -137,7 +141,9 @@ describe('toHeadShape', () => {
     expect(size(data)).toBe(2 * HEAD_REFERENCE_BYTES)
   })
 
-  test('each reference packs as sourceId || slot || root', () => {
+  // eip-8272.md §"Validation operation": source_id: bytes32, slot: uint64_be,
+  // root: bytes32 — concatenated, big-endian slot, in that order.
+  test('each reference packs as source_id || slot || root', () => {
     const data = toHeadShape(TWO_REFERENCE_TX).frames[0]!.data
     for (const [i, ref] of [REF_A, REF_B].entries()) {
       const at = i * HEAD_REFERENCE_BYTES

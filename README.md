@@ -110,13 +110,15 @@ compareRuleSets(tx, 'pins', 'head') // prices the head side over toHeadShape(tx)
 toHeadShape(tx) // the same transform on its own; identity when no reference is carried
 ```
 
-The synthetic frame claims zero execution and state, because no draft pins what a VERIFY
-against `0x…8272` costs. Every limit-derived term of the head price is therefore a floor,
-which is fine to compare against and wrong to budget with — so `frameTxGas(tx, 'head')`
-still throws for a reference-carrying transaction rather than hand you a floor that reads
-like a budget. `'head'` otherwise prices identically to `'pins'`; the EIP-8250 change it
-models is an execution-time charge against `limits.state`, published as
-`HEAD_KEYED_NONCE_STATE_GAS`.
+The synthetic frame claims zero execution and state. Zero state is normative: the draft
+pins `limits.state` for the recent root verifier frame, along with its mode, target, flags
+and value. `limits.execution` is the one figure it leaves open — that falls out of the
+`STATICCALL` and one `SLOAD` per tuple — so every limit-derived term of the head price is
+still a floor, fine to compare against and wrong to budget with. That is why
+`frameTxGas(tx, 'head')` still throws for a reference-carrying transaction rather than
+hand you a floor that reads like a budget. `'head'` otherwise prices identically to
+`'pins'`; the EIP-8250 change it models is an execution-time charge against
+`limits.state`, published as `HEAD_KEYED_NONCE_STATE_GAS`.
 
 Every gas constant is written as its published figure rather than derived. ethrex's own
 suite missed its intrinsic dropping from 15000 to 12000 across 1372 tests by deriving the

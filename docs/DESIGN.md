@@ -1,7 +1,7 @@
 # frametx-kit — design
 
 **Date:** 2026-09-06
-**Status:** implemented; binding on the code in this repository. Reviewed against ethrex `hegota-testnet` @ `19c065fa8` and the live node on 2026-09-06; §5, §6 and §9 amended for the RPC surface actually served (no raw transaction bytes). §5, §7 and §8 amended 2026-09-07 to match the module graph, strict-decode surface and entry-point name as built. §7 amended 2026-09-08: the byte-offset promise is delivered by a hand-rolled `walkRlp`, not deferred.
+**Status:** implemented; binding on the code in this repository. Reviewed against ethrex `hegota-testnet` @ `19c065fa8` and the live node on 2026-09-06; §5, §6 and §9 amended for the RPC surface actually served (no raw transaction bytes). §5, §7 and §8 amended 2026-09-07 to match the module graph, strict-decode surface and entry-point name as built. §7 amended 2026-09-08: the byte-offset promise is delivered by a hand-rolled `walkRlp`, not deferred. §4 amended 2026-09-08: the `'head'` EIP-8272 frame shape and `72`-byte tuple order confirmed against upstream `eip-8272.md` @ `824cbc0b0`.
 **Target network:** hegota-testnet, chain ID `8141`, genesis `0x7ca0f735…cd0f2332`
 **Reference client:** [`lambdaclass/ethrex`, branch `hegota-testnet`](https://github.com/lambdaclass/ethrex/tree/hegota-testnet). Every `.rs`, `.py` and `docs/*.md` path cited below is a path in that repository, not in this one.
 
@@ -276,14 +276,22 @@ What `'head'` changes, per the branch spec's "Changed upstream since the pins":
   here.
 - **EIP-8272** drops the envelope field, `TXPARAM 0x11` and `RECENTROOTREFLOAD` entirely,
   carrying references instead as a leading VERIFY frame targeting
-  `0x0000000000000000000000000000000000008272`, each `(source_id, slot, root)` packed into 72
-  bytes of frame data. This changes the *envelope*, not only the gas, so `'head'` cannot share
-  the `'chain'` encoder. `divergence.toHeadShape` applies the change as a transformation of the
+  `0x0000000000000000000000000000000000008272`. Confirmed against upstream
+  `ethereum/EIPs` `eip-8272.md` @ `824cbc0b0` (2026-09-07): the "recent root verifier frame"
+  is `mode == VERIFY`, `target == RECENT_ROOT_ADDRESS`, `flags == 0`, `value == 0`,
+  `limits.state == 0`, and its data is `n` tuples of `source_id: bytes32 || slot: uint64_be
+  || root: bytes32` — `RECENT_ROOT_TUPLE_BYTES = 72` — with no selector or length prefix.
+  The spec adds **no** special intrinsic gas, warming rule, or block-gas exemption: the
+  frame is priced as ordinary EIP-8141 frame data plus one more `FRAME_TX_PER_FRAME_COST`.
+  This changes the *envelope*, not only the gas, so `'head'` cannot share the `'chain'`
+  encoder. `divergence.toHeadShape` applies the change as a transformation of the
   transaction: the field is emptied and its contents prepended as one VERIFY frame with zero
   limits, which the existing pricer then prices. `compareRuleSets` routes whichever side names `'head'`
   through it. `gas` fabricates nothing and `frameTxGas(tx, 'head')` still refuses a
-  reference-carrying transaction, so the floor that zero limits produce cannot be mistaken for a
-  budget. No second serializer: the transform yields a `FrameTransaction`, never bytes.
+  reference-carrying transaction, so the floor that zero `limits.execution` produces — the
+  one figure the spec does not pin, since it falls out of the `STATICCALL` and the per-tuple
+  `SLOAD`s — cannot be mistaken for a budget. No second serializer: the transform yields a
+  `FrameTransaction`, never bytes.
 
 ## 5. Modules
 
