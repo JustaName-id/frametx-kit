@@ -32,3 +32,7 @@ export class FrameDecodeError extends FrameError {
     this.offset = offset
   }
 }
+
+export class FrameTimeoutError extends FrameError {
+  override name = 'FrameTimeoutError'
+}

@@ -1,4 +1,4 @@
-import { type Address, type EIP1193RequestFn, type Hex, getAddress } from 'viem'
+import { type Address, type EIP1193RequestFn, type Hex, getAddress, keccak256 } from 'viem'
 import { FrameDecodeError } from './errors.js'
 import type {
   Frame,
@@ -200,6 +200,44 @@ export async function simulateFrameTransaction(
   })) as Record<string, unknown>
 
   return parseSimulateResult(result)
+}
+
+/**
+ * `eth_sendRawTransaction` for a frame transaction.
+ *
+ * `raw` is the full wire form, `0x06 || rlp(body)`, as `encodeFrameTx` produces
+ * it — the same bytes `simulateFrameTransaction` takes. This function does no
+ * validation and no encoding: `rpc` sits below `envelope` in the module order
+ * and must stay there. The strict path is
+ * `assertValidFrameTx(tx)` → `encodeFrameTx(tx)` → here, and
+ * `frameActions(client).sendFrameTransaction` in `src/viem.ts` walks it for you.
+ *
+ * The hash the node reports is checked against `keccak256(raw)`. The transaction
+ * hash is defined as exactly that, so a mismatch means the node did not accept
+ * the bytes we think we sent — the mirror of the pin `getFrameTransaction`
+ * applies when reading.
+ */
+export async function sendRawFrameTransaction(client: FrameRpcClient, raw: Hex): Promise<Hex> {
+  if (!/^0x06[0-9a-fA-F]*$/.test(raw))
+    throw new FrameDecodeError('not a frame transaction: raw bytes must start with 0x06')
+
+  const answer = (await client.request({
+    method: 'eth_sendRawTransaction',
+    params: [raw],
+  })) as unknown
+
+  if (typeof answer !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(answer))
+    throw new FrameDecodeError(
+      `eth_sendRawTransaction: answer must be a 32-byte hash, got ${JSON.stringify(answer)}`,
+    )
+
+  const expected = keccak256(raw)
+  const reported = answer.toLowerCase() as Hex
+  if (reported !== expected.toLowerCase())
+    throw new FrameDecodeError(
+      `eth_sendRawTransaction: node returned ${reported} for bytes hashing to ${expected}`,
+    )
+  return reported
 }
 
 /** A field is missing (`null`) or it is checked. Nothing here is cast. */

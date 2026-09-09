@@ -6,6 +6,13 @@ binding spec.
 
 Nothing here is blocking. In rough priority order:
 
+- **Broadcast has no live gate.** `sendFrameTransaction` is verified against a stubbed node
+  only. A live test would need a sender contract deployed on hegota-testnet whose VERIFY
+  prefix calls `APPROVE`, a key funded from `faucet.privacy.ethrex.xyz`, and a second opt-in
+  env var distinct from `FRAMES_LIVE`, because that suite is documented as unable to alter
+  chain state. Until then the strongest evidence that our bytes are admissible is
+  `ethrex_simulateFrameTransaction` returning a recognized `prefixShape`, which the existing
+  live suite already checks.
 - **The head reference price is a floor, not a budget.** `toHeadShape` rewrites a
   reference-carrying transaction into its EIP-8272 head equivalent, so the divergence
   survey prices one instead of refusing it. The synthetic "recent root verifier frame"

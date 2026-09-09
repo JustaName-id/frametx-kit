@@ -14,6 +14,18 @@ function stubClient(responses: Record<string, unknown>) {
   return { request: request as unknown as EIP1193RequestFn }
 }
 
+/** A stub whose answer to one method changes per call. */
+function sequenceClient(method: string, answers: unknown[]) {
+  let i = 0
+  const request = vi.fn(async (args: { method: string }) => {
+    if (args.method !== method) throw new Error(`unexpected method ${args.method}`)
+    const answer = answers[Math.min(i, answers.length - 1)]
+    i += 1
+    return answer
+  })
+  return { client: { request: request as unknown as EIP1193RequestFn }, request }
+}
+
 describe('frameActions', () => {
   test('getFrameTransaction parses the node JSON and verifies it against the hash', async () => {
     const client = stubClient({
@@ -76,5 +88,66 @@ describe('frameActions', () => {
     )
     expect(typeof client.getFrameTransaction).toBe('function')
     expect(client.estimateFrameGas({ transaction: GOLDEN_TX }).maxGas).toBe(77_974n)
+  })
+
+  test('waitForFrameTransactionReceipt polls until the receipt is present', async () => {
+    const receipt = {
+      payer: null,
+      frameReceipts: [{ status: '0x2', gasUsed: '0x0', stateGasUsed: '0x0', logs: [] }],
+    }
+    const { client, request } = sequenceClient('eth_getTransactionReceipt', [null, null, receipt])
+    const parsed = await frameActions(client).waitForFrameTransactionReceipt({
+      hash: GOLDEN_HASH,
+      pollingInterval: 1,
+    })
+    expect(request).toHaveBeenCalledTimes(3)
+    // Three-valued status survives the wait; this is the reason the poller exists.
+    expect(parsed.frameReceipts[0]!.status).toBe('skipped')
+  })
+
+  test('waitForFrameTransactionReceipt throws FrameTimeoutError when nothing lands', async () => {
+    const { client } = sequenceClient('eth_getTransactionReceipt', [null])
+    await expect(
+      frameActions(client).waitForFrameTransactionReceipt({
+        hash: GOLDEN_HASH,
+        pollingInterval: 1,
+        timeout: 10,
+      }),
+    ).rejects.toMatchObject({ name: 'FrameTimeoutError' })
+  })
+
+  test('waitForFrameTransactionReceipt rejects a non-positive polling interval', async () => {
+    const { client, request } = sequenceClient('eth_getTransactionReceipt', [null])
+    await expect(
+      frameActions(client).waitForFrameTransactionReceipt({ hash: GOLDEN_HASH, pollingInterval: 0 }),
+    ).rejects.toThrow(/pollingInterval/)
+    expect(request).not.toHaveBeenCalled()
+  })
+  test('sendFrameTransaction validates, encodes and sends a transaction', async () => {
+    const client = stubClient({ eth_sendRawTransaction: GOLDEN_HASH })
+    const hash = await frameActions(client).sendFrameTransaction({ transaction: GOLDEN_TX })
+    expect(hash).toBe(GOLDEN_HASH)
+    expect(client.request).toHaveBeenCalledWith({
+      method: 'eth_sendRawTransaction',
+      params: [GOLDEN_RLP],
+    })
+  })
+
+  test('sendFrameTransaction refuses an invalid transaction before touching the network', async () => {
+    const client = stubClient({ eth_sendRawTransaction: GOLDEN_HASH })
+    // Reserved flag bits (3-7) must be zero; 0x08 sets bit 3.
+    const bad = {
+      ...GOLDEN_TX,
+      frames: [{ ...GOLDEN_TX.frames[0]!, flags: 0x08 }, GOLDEN_TX.frames[1]!],
+    }
+    await expect(
+      frameActions(client).sendFrameTransaction({ transaction: bad }),
+    ).rejects.toThrow(/reserved/)
+    expect(client.request).not.toHaveBeenCalled()
+  })
+
+  test('sendFrameTransaction sends raw bytes as given', async () => {
+    const client = stubClient({ eth_sendRawTransaction: GOLDEN_HASH })
+    expect(await frameActions(client).sendFrameTransaction({ raw: GOLDEN_RLP })).toBe(GOLDEN_HASH)
   })
 })
